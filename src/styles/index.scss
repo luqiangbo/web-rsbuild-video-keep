@@ -1,0 +1,69 @@
+/* 1. 移除默认 margin、padding，统一盒模型 */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* 2. 优化排版 */
+html {
+  font-size: 16px; /* 作为基础值，配合 rem 可调整 */
+  -webkit-text-size-adjust: 100%; /* 防止 iOS 自动放大字体 */
+}
+
+body {
+  line-height: 1.5;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  background-color: #fff;
+  color: #000;
+}
+
+/* 3. 图片、视频等媒体元素自适应 */
+img,
+video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* 4. 移除列表默认样式 */
+ul,
+ol {
+  list-style: none;
+}
+
+/* 5. 链接去掉默认下划线，颜色继承 */
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* 6. 表单元素继承字体 */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  border: none;
+  outline: none;
+}
+
+/* 7. 表格优化 */
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+///
+///
+///
+//

@@ -1,0 +1,42 @@
+{
+  "name": "video-keep",
+  "version": "1.0",
+  "description": "自定义下载视频",
+  "manifest_version": 3,
+  "key": "",
+  "permissions": ["cookies", "activeTab", "storage", "tabs"],
+  "host_permissions": ["*://*.x.com/*", "*://*.tiktok.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "index.html",
+    "default_icon": {
+      "16": "img/icon.svg",
+      "48": "img/icon.svg",
+      "128": "img/icon.svg"
+    }
+  },
+  "icons": {
+    "16": "img/icon.svg",
+    "48": "img/icon.svg",
+    "128": "img/icon.svg"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.x.com/*"],
+      "js": ["static/jquery.min.js", "content_scripts.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["static/jquery.min.js"],
+      "matches": ["*://*.x.com/*"]
+    },
+    {
+      "resources": ["images/*"],
+      "matches": ["*://*.x.com/*"]
+    }
+  ]
+}
