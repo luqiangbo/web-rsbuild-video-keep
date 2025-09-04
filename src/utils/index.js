@@ -1,68 +1,117 @@
-// ------------------------------ RSA 密钥对生成 ------------------------------
-// 生成 RSA-OAEP 密钥对（2048 位，用于加密）
-async function generateRsaKeyPair() {
-  return window.crypto.subtle.generateKey(
-    {
-      name: "RSA-OAEP",
-      modulusLength: 2048, // 密钥长度（推荐 2048+）
-      publicExponent: new Uint8Array([0x01, 0x00, 0x01]), // 固定为 0x10001
-      hash: { name: "SHA-256" }, // 哈希算法（推荐 SHA-256）
-    },
-    true, // 可导出（根据需求调整）
-    ["encrypt", "decrypt"], // 密钥用途
-  );
+// IndexedDB 工具：存储下载记录、去重与状态
+
+const DB_NAME = "video_keep_db";
+const DB_VERSION = 1;
+const STORE_DOWNLOADS = "downloads";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_DOWNLOADS)) {
+        const store = db.createObjectStore(STORE_DOWNLOADS, { keyPath: "id" });
+        store.createIndex("by_url", "url", { unique: false });
+        store.createIndex("by_user", ["username", "userId"], { unique: false });
+        store.createIndex("by_createdAt", "createdAt", { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
-// ------------------------------ RSA 加密 AES 密钥 ------------------------------
-// 用公钥加密 AES 密钥（原始字节）
-async function encryptAesKeyWithRsa(aesKeyBytes, publicKey) {
-  return window.crypto.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    publicKey,
-    aesKeyBytes,
-  );
+async function withStore(mode, fn) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_DOWNLOADS, mode);
+    const store = tx.objectStore(STORE_DOWNLOADS);
+    const result = fn(store);
+    tx.oncomplete = () => resolve(result);
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
-// ------------------------------ AES-GCM 加密数据 ------------------------------
-// 生成 AES-GCM 密钥并加密数据
-async function encryptDataWithAes(plaintext, aesKey) {
-  const iv = window.crypto.getRandomValues(new Uint8Array(12)); // 12 字节 IV（推荐）
-  const plaintextBytes = new TextEncoder().encode(plaintext);
-
-  const ciphertext = await window.crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, tagLength: 128 }, // tagLength 可选 128/120/112/104/96
-    aesKey,
-    plaintextBytes,
-  );
-
-  return { iv, ciphertext }; // iv 需传输给接收方
+export async function addDownloadRecord(record) {
+  const id = record.id || crypto.randomUUID();
+  const payload = {
+    id,
+    url: record.url,
+    filename: record.filename,
+    username: record.username,
+    userId: record.userId,
+    text: record.text || "",
+    status: record.status || "queued",
+    downloadId: record.downloadId || null,
+    createdAt: record.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  await withStore("readwrite", (store) => store.put(payload));
+  return payload;
 }
 
-// ------------------------------ 使用示例 ------------------------------
-async function main() {
-  // 1. 生成 RSA 密钥对（公钥给客户端，私钥留服务端）
-  const rsaKeyPair = await generateRsaKeyPair();
-  const publicKey = rsaKeyPair.publicKey;
-  const privateKey = rsaKeyPair.privateKey;
-
-  // 2. 客户端生成 AES 密钥
-  const aesKey = await window.crypto.subtle.generateKey(
-    { name: "AES-GCM", length: 256 }, // 256 位 AES
-    true, // 可导出（用于 RSA 加密）
-    ["encrypt", "decrypt"],
-  );
-
-  // 3. 导出 AES 密钥原始字节（用于 RSA 加密）
-  const aesKeyBytes = await window.crypto.subtle.exportKey("raw", aesKey);
-
-  // 4. 用 RSA 公钥加密 AES 密钥
-  const encryptedAesKey = await encryptAesKeyWithRsa(aesKeyBytes, publicKey);
-
-  // 5. 用 AES 加密业务数据
-  const plaintext = "敏感数据：用户密码 123456";
-  const { iv, ciphertext } = await encryptDataWithAes(plaintext, aesKey);
-
-  // 6. 发送 encryptedAesKey（ArrayBuffer）、iv（ArrayBuffer）、ciphertext（ArrayBuffer）到服务端
+export async function bulkAddDownloadRecords(items) {
+  const inserted = [];
+  await withStore("readwrite", (store) => {
+    items.forEach((it) => {
+      const payload = {
+        id: it.id || crypto.randomUUID(),
+        url: it.url,
+        filename: it.filename,
+        username: it.username,
+        userId: it.userId,
+        text: it.text || "",
+        status: it.status || "queued",
+        downloadId: it.downloadId || null,
+        createdAt: it.createdAt || Date.now(),
+        updatedAt: Date.now(),
+      };
+      store.put(payload);
+      inserted.push(payload);
+    });
+  });
+  return inserted;
 }
 
-main();
+export async function listDownloads(limit = 500) {
+  const results = [];
+  await withStore("readonly", (store) => {
+    const idx = store.index("by_createdAt");
+    idx.openCursor(null, "prev").onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor && results.length < limit) {
+        results.push(cursor.value);
+        cursor.continue();
+      }
+    };
+  });
+  return results;
+}
+
+export async function markDownloadedByDownloadId(downloadId) {
+  await withStore("readwrite", (store) => {
+    store.openCursor().onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (!cursor) return;
+      const val = cursor.value;
+      if (val.downloadId === downloadId) {
+        val.status = "completed";
+        val.updatedAt = Date.now();
+        cursor.update(val);
+      }
+      cursor.continue();
+    };
+  });
+}
+
+export async function hasDownloaded(url) {
+  let exist = false;
+  await withStore("readonly", (store) => {
+    const idx = store.index("by_url");
+    const req = idx.get(url);
+    req.onsuccess = () => {
+      exist = !!req.result;
+    };
+  });
+  return exist;
+}

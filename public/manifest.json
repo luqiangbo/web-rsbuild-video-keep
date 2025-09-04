@@ -3,40 +3,52 @@
   "version": "1.0",
   "description": "自定义下载视频",
   "manifest_version": 3,
-  "key": "",
-  "permissions": ["cookies", "activeTab", "storage", "tabs"],
-  "host_permissions": ["*://*.x.com/*", "*://*.tiktok.com/*"],
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "storage",
+    "tabs",
+    "downloads",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "*://*.x.com/*",
+    "*://*.tiktok.com/*",
+    "*://*.instagram.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "index.html",
     "default_icon": {
-      "16": "img/icon.svg",
-      "48": "img/icon.svg",
-      "128": "img/icon.svg"
+      "16": "img/icon.png",
+      "48": "img/icon.png",
+      "128": "img/icon.png"
     }
   },
+  "side_panel": {
+    "default_path": "index.html"
+  },
   "icons": {
-    "16": "img/icon.svg",
-    "48": "img/icon.svg",
-    "128": "img/icon.svg"
+    "16": "img/icon.png",
+    "48": "img/icon.png",
+    "128": "img/icon.png"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.x.com/*"],
-      "js": ["static/jquery.min.js", "content_scripts.js"],
+      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"],
+      "js": ["jquery.min.js", "content_script.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["static/jquery.min.js"],
-      "matches": ["*://*.x.com/*"]
+      "resources": ["jquery.min.js"],
+      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"]
     },
     {
-      "resources": ["images/*"],
-      "matches": ["*://*.x.com/*"]
+      "resources": ["img/*"],
+      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"]
     }
   ]
 }
