@@ -11,11 +11,7 @@
     "downloads",
     "sidePanel"
   ],
-  "host_permissions": [
-    "*://*.x.com/*",
-    "*://*.tiktok.com/*",
-    "*://*.instagram.com/*"
-  ],
+  "host_permissions": ["*://*.x.com/*"],
   "background": {
     "service_worker": "background.js"
   },
@@ -36,7 +32,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"],
+      "matches": ["*://*.x.com/*"],
       "js": ["jquery.min.js", "content_script.js"],
       "run_at": "document_idle"
     }
@@ -44,11 +40,11 @@
   "web_accessible_resources": [
     {
       "resources": ["jquery.min.js"],
-      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"]
+      "matches": ["*://*.x.com/*"]
     },
     {
       "resources": ["img/*"],
-      "matches": ["*://*.x.com/*", "*://*.instagram.com/*"]
+      "matches": ["*://*.x.com/*"]
     }
   ]
 }

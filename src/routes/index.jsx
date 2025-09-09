@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useSetState } from "ahooks";
-import { Button, List, Tag, Typography, Space, message, Input } from "antd";
-import { bulkAddDownloadRecords, listDownloads } from "@/utils";
+import { Button, List, Tag, Typography, Space, Input } from "antd";
+import { listDownloads } from "@/utils";
 
 export const Route = createFileRoute("/")({
   component: RouteComponent,
@@ -44,21 +44,6 @@ function RouteComponent() {
     );
   }, [state.records, state.filterText]);
 
-  const onAddMock = async () => {
-    const items = [
-      {
-        url: "https://example.com/video.mp4",
-        filename: `user_uid_desc_${Date.now()}.mp4`,
-        username: "user",
-        userId: "uid",
-        text: "desc",
-        status: "queued",
-      },
-    ];
-    await bulkAddDownloadRecords(items);
-    message.success("已添加示例记录");
-    refresh();
-  };
   return (
     <div style={{ padding: 12, width: 360 }}>
       <Space style={{ marginBottom: 12 }}>
@@ -67,9 +52,6 @@ function RouteComponent() {
         </Typography.Title>
         <Button size="small" onClick={refresh} loading={state.loading}>
           刷新
-        </Button>
-        <Button size="small" onClick={onAddMock}>
-          添加示例
         </Button>
       </Space>
       <Input.Search
