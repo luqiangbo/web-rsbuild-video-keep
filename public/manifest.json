@@ -33,13 +33,13 @@
   "content_scripts": [
     {
       "matches": ["*://*.x.com/*"],
-      "js": ["jquery.min.js", "content_script.js"],
+      "js": ["content_script.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["jquery.min.js", "injected-hooks.js"],
+      "resources": ["injected-hooks.js"],
       "matches": ["*://*.x.com/*"]
     },
     {

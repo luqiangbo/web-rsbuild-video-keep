@@ -50,7 +50,46 @@ loadTemplateOnce();
 function mergeTweetMetadata(tweetId, patch) {
   if (!tweetId || !patch) return;
   const existed = VK_X_MEDIA_METADATA.get(tweetId) || {};
-  VK_X_MEDIA_METADATA.set(tweetId, { ...existed, ...patch });
+  const mergedImages = [...(existed.images || [])];
+  if (Array.isArray(patch.images)) {
+    patch.images.forEach((img) => {
+      if (!img?.url) return;
+      if (!mergedImages.some((item) => item.url === img.url)) {
+        mergedImages.push(img);
+      }
+    });
+  }
+  const next = {
+    ...existed,
+    ...patch,
+    images: mergedImages,
+  };
+  VK_X_MEDIA_METADATA.set(tweetId, next);
+}
+
+function collectImagesFromLegacy(tweetId, media = []) {
+  if (!tweetId || !Array.isArray(media)) return;
+  const images = media
+    .filter(
+      (m) =>
+        (m?.type === "photo" || m?.type === "animated_gif") &&
+        m?.media_url_https,
+    )
+    .map((m) => {
+      let url = m.media_url_https || m.media_url || m.url;
+      if (url && !/:(?:large|orig)$/.test(url)) {
+        url = `${url}:orig`;
+      }
+      return {
+        url,
+        type: m.type,
+        id: m.id_str || m.id,
+      };
+    })
+    .filter((x) => x.url);
+  if (images.length) {
+    mergeTweetMetadata(tweetId, { images });
+  }
 }
 
 function upsertTweetVariants(tweetId, variants, extra = {}) {
@@ -116,17 +155,20 @@ function handleTweetLegacy(container) {
     tweetCreatedAt: createdAt,
     text: text || undefined,
     screenName: screenName || undefined,
+    username: userInfo.displayName || userInfo.name,
     userId: userId || undefined,
     tweetId,
   });
 
   const media = legacy.extended_entities?.media || legacy.entities?.media || [];
+  collectImagesFromLegacy(tweetId, media);
   media.forEach((m) => {
     const variants = m?.video_info?.variants || [];
     upsertTweetVariants(tweetId, variants, {
       tweetCreatedAt: createdAt,
       text: text || undefined,
       screenName: screenName || undefined,
+      username: userInfo.displayName || userInfo.name,
       userId: userId || undefined,
       tweetId,
     });
@@ -276,6 +318,9 @@ function buildFilename(meta = {}) {
   const replacements = {
     screenName: sanitizeFilename(meta.screenName || meta.handle || "user"),
     username: sanitizeFilename(meta.username || meta.displayName || "user"),
+    userId: sanitizeFilename(
+      meta.username || meta.displayName || meta.screenName || "user",
+    ),
     tweetTime: sanitizeFilename(tweetTime || "time"),
     tweetId: sanitizeFilename(meta.tweetId || "tweet"),
     random: sanitizeFilename(generateRandomString(6)),
@@ -283,7 +328,7 @@ function buildFilename(meta = {}) {
   };
 
   let result = template.replace(
-    /\{(screenName|username|tweetTime|tweetId|random|text)\}/g,
+    /\{(screenName|username|userId|tweetTime|tweetId|random|text)\}/g,
     (match, key) => {
       return replacements[key] || "";
     },
@@ -420,6 +465,7 @@ function getArticleMeta(article, tweetId) {
     handle: resolvedHandle,
     text,
     tweetCreatedAt: stored.tweetCreatedAt,
+    images: stored.images || [],
   };
 }
 
@@ -442,7 +488,6 @@ function makeDownloadButton() {
     </span>
   `;
   btn.setAttribute("type", "button");
-  btn.setAttribute("title", "下载视频");
   Object.assign(btn.style, {
     display: "inline-flex",
     alignItems: "center",
@@ -557,35 +602,91 @@ function injectButtonForArticle(article) {
       ...metaFromArticle,
       tweetId: tweetId || storeMeta.tweetId,
     };
+    const hasImages = combinedMeta.images && combinedMeta.images.length > 0;
+    const tooltipParts = [];
+    if (selectBestUrl(tweetId) || pickVideoUrlFromArticle(article)) {
+      tooltipParts.push("下载视频");
+    }
+    if (hasImages) {
+      tooltipParts.push("下载图片");
+    }
+    btn.setAttribute("title", tooltipParts.join(" / ") || "下载");
+
     let url = selectBestUrl(tweetId);
-    if (!url) {
+    if (!url && !hasImages) {
       url = pickVideoUrlFromArticle(article);
     }
-    if (!url) return;
+    if (!url && !hasImages) return;
+
     const filename = buildFilename(combinedMeta);
-    chrome.runtime.sendMessage(
-      {
-        type: "VK_DOWNLOAD",
-        payload: {
-          url,
-          filename,
-          tweetId: tweetId || null,
-          screenName: combinedMeta.screenName || combinedMeta.username || null,
-          text: combinedMeta.text || null,
-          userId: combinedMeta.screenName || null,
-          tweetCreatedAt: combinedMeta.tweetCreatedAt || null,
-        },
-      },
-      (res) => {
-        if (res && !res.ok) {
-          console.warn("download failed", res.error);
-        }
-        if (res && res.ok) {
-          markButtonDownloaded(btn);
-        }
-      },
-    );
+    const downloads = [];
+
+    if (url) {
+      downloads.push(
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              type: "VK_DOWNLOAD",
+              payload: {
+                url,
+                filename,
+                tweetId: tweetId || null,
+                screenName:
+                  combinedMeta.screenName || combinedMeta.username || null,
+                text: combinedMeta.text || null,
+                userId: combinedMeta.screenName || null,
+                tweetCreatedAt: combinedMeta.tweetCreatedAt || null,
+              },
+            },
+            (res) => {
+              if (res && !res.ok) {
+                console.warn("download failed", res.error);
+              }
+              resolve(res);
+            },
+          );
+        }),
+      );
+    }
+
+    if (hasImages) {
+      combinedMeta.images.forEach((img, index) => {
+        const imageFilename = `${filename.replace(/\.mp4$/i, "")}_${String(
+          index + 1,
+        ).padStart(2, "0")}.jpg`;
+        downloads.push(
+          new Promise((resolve) => {
+            chrome.runtime.sendMessage(
+              {
+                type: "VK_DOWNLOAD",
+                payload: {
+                  url: img.url,
+                  filename: imageFilename,
+                  tweetId: tweetId || null,
+                  screenName:
+                    combinedMeta.screenName || combinedMeta.username || null,
+                  text: combinedMeta.text || null,
+                  userId: combinedMeta.screenName || null,
+                  tweetCreatedAt: combinedMeta.tweetCreatedAt || null,
+                },
+              },
+              (res) => {
+                if (res && !res.ok) {
+                  console.warn("image download failed", res.error);
+                }
+                resolve(res);
+              },
+            );
+          }),
+        );
+      });
+    }
+
+    Promise.all(downloads).then(() => {
+      markButtonDownloaded(btn);
+    });
   });
+
   actionBar.appendChild(btn);
   article.dataset.vkBtnInjected = "1";
   checkAndMarkDownloaded(article, btn);
