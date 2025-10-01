@@ -10,7 +10,7 @@ try {
 // ==== IndexedDB helpers: vk_history & vk_records ====
 let VK_IDB_DB;
 const VK_IDB_NAME = "vk_downloads_db";
-const VK_IDB_VERSION = 1;
+const VK_IDB_VERSION = 2;
 const STORE_HISTORY = "vk_history"; // key: tweetId
 const STORE_RECORDS = "vk_records"; // key: id (auto), index: downloadId, tweetId
 
@@ -20,16 +20,48 @@ function idbOpen() {
     const req = indexedDB.open(VK_IDB_NAME, VK_IDB_VERSION);
     req.onupgradeneeded = (ev) => {
       const db = ev.target.result;
+      const tx = ev.target.transaction;
+      let historyStore;
       if (!db.objectStoreNames.contains(STORE_HISTORY)) {
-        db.createObjectStore(STORE_HISTORY, { keyPath: "tweetId" });
+        historyStore = db.createObjectStore(STORE_HISTORY, {
+          keyPath: "tweetId",
+        });
+      } else {
+        historyStore = tx.objectStore(STORE_HISTORY);
       }
+      if (historyStore && !historyStore.indexNames.contains("screenName")) {
+        historyStore.createIndex("screenName", "screenName", { unique: false });
+      }
+
+      let recordStore;
       if (!db.objectStoreNames.contains(STORE_RECORDS)) {
-        const os = db.createObjectStore(STORE_RECORDS, {
+        recordStore = db.createObjectStore(STORE_RECORDS, {
           keyPath: "id",
           autoIncrement: true,
         });
-        os.createIndex("downloadId", "downloadId", { unique: false });
-        os.createIndex("tweetId", "tweetId", { unique: false });
+      } else {
+        recordStore = tx.objectStore(STORE_RECORDS);
+      }
+      if (recordStore) {
+        if (!recordStore.indexNames.contains("downloadId")) {
+          recordStore.createIndex("downloadId", "downloadId", {
+            unique: false,
+          });
+        }
+        if (!recordStore.indexNames.contains("tweetId")) {
+          recordStore.createIndex("tweetId", "tweetId", { unique: false });
+        }
+        if (!recordStore.indexNames.contains("createdAt")) {
+          recordStore.createIndex("createdAt", "createdAt", { unique: false });
+        }
+        if (!recordStore.indexNames.contains("screenName")) {
+          recordStore.createIndex("screenName", "screenName", {
+            unique: false,
+          });
+        }
+        if (!recordStore.indexNames.contains("url")) {
+          recordStore.createIndex("url", "url", { unique: false });
+        }
       }
     };
     req.onsuccess = () => {
@@ -124,7 +156,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ ok: true, downloadId });
             try {
               // persist record and history
-              const createdAt = Date.now();
+              const now = Date.now();
+              const createdAt = now;
               const record = {
                 downloadId,
                 url,
@@ -134,6 +167,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 text: text || null,
                 status: downloadId ? "queued" : "interrupted",
                 createdAt,
+                updatedAt: now,
                 completedAt: null,
               };
               idbPut(STORE_RECORDS, record).catch(() => {});
@@ -143,6 +177,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   screenName: screenName || null,
                   text: text || null,
                   firstDownloadedAt: createdAt,
+                  updatedAt: now,
                 }).catch(() => {});
               }
               chrome.runtime.sendMessage({
@@ -176,10 +211,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           conflictAction: "uniquify",
         },
         (downloadId) => {
+          const now = Date.now();
           const payload = {
             ...it,
             downloadId,
             status: downloadId ? "queued" : "interrupted",
+            createdAt: it.createdAt || now,
+            updatedAt: now,
           };
           results.push({
             ...payload,

@@ -1,19 +1,35 @@
 // IndexedDB 工具：存储下载记录、去重与状态
 
 const DB_NAME = "video_keep_db";
-const DB_VERSION = 1;
-const STORE_DOWNLOADS = "downloads";
+const DB_VERSION = 2;
+const STORE_DOWNLOADS = "records";
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
+    req.onupgradeneeded = (ev) => {
+      const db = ev.target.result;
+      const tx = ev.target.transaction;
+      let store;
       if (!db.objectStoreNames.contains(STORE_DOWNLOADS)) {
-        const store = db.createObjectStore(STORE_DOWNLOADS, { keyPath: "id" });
-        store.createIndex("by_url", "url", { unique: false });
-        store.createIndex("by_user", ["username", "userId"], { unique: false });
-        store.createIndex("by_createdAt", "createdAt", { unique: false });
+        store = db.createObjectStore(STORE_DOWNLOADS, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+      } else {
+        store = tx.objectStore(STORE_DOWNLOADS);
+      }
+      if (store) {
+        const ensureIndex = (name, keyPath) => {
+          if (!store.indexNames.contains(name)) {
+            store.createIndex(name, keyPath, { unique: false });
+          }
+        };
+        ensureIndex("by_downloadId", "downloadId");
+        ensureIndex("by_tweetId", "tweetId");
+        ensureIndex("by_createdAt", "createdAt");
+        ensureIndex("by_url", "url");
+        ensureIndex("by_screenName", "screenName");
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -26,25 +42,35 @@ async function withStore(mode, fn) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_DOWNLOADS, mode);
     const store = tx.objectStore(STORE_DOWNLOADS);
-    const result = fn(store);
-    tx.oncomplete = () => resolve(result);
+    let out;
+    try {
+      out = fn(store);
+    } catch (error) {
+      tx.abort();
+      reject(error);
+      return;
+    }
+    tx.oncomplete = () => resolve(out);
     tx.onerror = () => reject(tx.error);
   });
 }
 
 export async function addDownloadRecord(record) {
-  const id = record.id || crypto.randomUUID();
+  const now = Date.now();
+  const id = record.id ?? record.downloadId ?? crypto.randomUUID();
   const payload = {
     id,
     url: record.url,
     filename: record.filename,
-    username: record.username,
-    userId: record.userId,
+    screenName: record.screenName || record.username || null,
+    userId: record.userId || null,
     text: record.text || "",
     status: record.status || "queued",
     downloadId: record.downloadId || null,
-    createdAt: record.createdAt || Date.now(),
-    updatedAt: Date.now(),
+    tweetId: record.tweetId || null,
+    createdAt: record.createdAt || now,
+    updatedAt: record.updatedAt || now,
+    completedAt: record.completedAt || null,
   };
   await withStore("readwrite", (store) => store.put(payload));
   return payload;
@@ -54,17 +80,20 @@ export async function bulkAddDownloadRecords(items) {
   const inserted = [];
   await withStore("readwrite", (store) => {
     items.forEach((it) => {
+      const now = Date.now();
       const payload = {
-        id: it.id || crypto.randomUUID(),
+        id: it.id ?? it.downloadId ?? crypto.randomUUID(),
         url: it.url,
         filename: it.filename,
-        username: it.username,
-        userId: it.userId,
+        screenName: it.screenName || it.username || null,
+        userId: it.userId || null,
         text: it.text || "",
         status: it.status || "queued",
         downloadId: it.downloadId || null,
-        createdAt: it.createdAt || Date.now(),
-        updatedAt: Date.now(),
+        tweetId: it.tweetId || null,
+        createdAt: it.createdAt || now,
+        updatedAt: it.updatedAt || now,
+        completedAt: it.completedAt || null,
       };
       store.put(payload);
       inserted.push(payload);
@@ -95,8 +124,10 @@ export async function markDownloadedByDownloadId(downloadId) {
       if (!cursor) return;
       const val = cursor.value;
       if (val.downloadId === downloadId) {
+        const now = Date.now();
         val.status = "completed";
-        val.updatedAt = Date.now();
+        val.updatedAt = now;
+        val.completedAt = val.completedAt || now;
         cursor.update(val);
       }
       cursor.continue();

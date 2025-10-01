@@ -15,21 +15,21 @@
     "@use-gesture/react": "^10.3.1",
     "ahooks": "^3.9.5",
     "antd": "^5.27.1",
-    "axios": "^1.11.0",
+    "axios": "^1.12.2",
     "dayjs": "^1.11.18",
     "qs": "^6.14.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "uuid": "^11.1.0",
-    "valtio": "^2.1.7"
+    "uuid": "^13.0.0",
+    "valtio": "^2.1.8"
   },
   "devDependencies": {
-    "@rsbuild/core": "^1.5.3",
-    "@rsbuild/plugin-react": "1.4.0",
+    "@rsbuild/core": "^1.5.13",
+    "@rsbuild/plugin-react": "1.4.1",
     "@rsbuild/plugin-sass": "^1.4.0",
     "@rsbuild/plugin-svgr": "1.2.2",
-    "@tanstack/router-plugin": "^1.131.31",
-    "oxlint": "^1.14.0",
+    "@tanstack/router-plugin": "^1.132.27",
+    "oxlint": "^1.19.0",
     "prettier": "^3.6.2"
   }
 }

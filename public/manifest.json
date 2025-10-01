@@ -39,7 +39,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["jquery.min.js"],
+      "resources": ["jquery.min.js", "injected-hooks.js"],
       "matches": ["*://*.x.com/*"]
     },
     {

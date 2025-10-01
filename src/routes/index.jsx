@@ -1,7 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useSetState } from "ahooks";
-import { Button, List, Tag, Typography, Space, Input } from "antd";
+import { Button, List, Tag, Typography, Space, Input, Empty } from "antd";
+import dayjs from "dayjs";
 import { listDownloads } from "@/utils";
 
 export const Route = createFileRoute("/")({
@@ -36,11 +37,9 @@ function RouteComponent() {
     const t = state.filterText.trim().toLowerCase();
     if (!t) return state.records;
     return state.records.filter((r) =>
-      [r.filename, r.username, r.userId, r.text].some((x) =>
-        String(x || "")
-          .toLowerCase()
-          .includes(t),
-      ),
+      [r.filename, r.screenName, r.userId, r.text, r.tweetId]
+        .filter(Boolean)
+        .some((x) => String(x).toLowerCase().includes(t)),
     );
   }, [state.records, state.filterText]);
 
@@ -62,36 +61,75 @@ function RouteComponent() {
         style={{ marginBottom: 8 }}
       />
       <List
+        locale={{ emptyText: <Empty description="暂无下载记录" /> }}
         size="small"
         dataSource={filtered}
         bordered
-        renderItem={(item) => (
-          <List.Item
-            actions={[
-              <Tag
-                color={
-                  item.status === "completed"
-                    ? "green"
-                    : item.status === "interrupted"
-                      ? "red"
-                      : "blue"
+        renderItem={(item) => {
+          const statusColor =
+            item.status === "completed"
+              ? "green"
+              : item.status === "interrupted"
+                ? "red"
+                : "blue";
+          const createdAt = item.createdAt
+            ? dayjs(item.createdAt).format("YYYY-MM-DD HH:mm")
+            : "";
+          const completedAt = item.completedAt
+            ? dayjs(item.completedAt).format("HH:mm")
+            : null;
+          return (
+            <List.Item
+              actions={[
+                <div key="times" style={{ textAlign: "right" }}>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block" }}
+                  >
+                    {createdAt}
+                  </Typography.Text>
+                  {completedAt ? (
+                    <Typography.Text type="secondary">
+                      完成 {completedAt}
+                    </Typography.Text>
+                  ) : null}
+                </div>,
+                <Tag color={statusColor} key="status">
+                  {item.status || "queued"}
+                </Tag>,
+              ]}
+            >
+              <List.Item.Meta
+                title={
+                  <Typography.Text ellipsis style={{ maxWidth: 200 }}>
+                    {item.filename || item.url}
+                  </Typography.Text>
                 }
-                key="s"
-              >
-                {item.status}
-              </Tag>,
-            ]}
-          >
-            <List.Item.Meta
-              title={
-                <Typography.Text ellipsis style={{ maxWidth: 220 }}>
-                  {item.filename}
-                </Typography.Text>
-              }
-              description={`${item.username} (${item.userId}) ${item.text ? "- " + item.text : ""}`}
-            />
-          </List.Item>
-        )}
+                description={
+                  <div>
+                    <Typography.Text
+                      style={{ display: "block" }}
+                      type="secondary"
+                    >
+                      {item.screenName || "未知用户"}
+                      {item.userId ? ` (${item.userId})` : ""} ·{" "}
+                      {item.tweetId || "-"}
+                    </Typography.Text>
+                    {item.text ? (
+                      <Typography.Paragraph
+                        type="secondary"
+                        style={{ marginBottom: 0 }}
+                        ellipsis={{ rows: 2 }}
+                      >
+                        {item.text}
+                      </Typography.Paragraph>
+                    ) : null}
+                  </div>
+                }
+              />
+            </List.Item>
+          );
+        }}
       />
     </div>
   );

@@ -166,9 +166,17 @@
       idbAll(STORE_RECORDS),
       idbAll(STORE_HISTORY),
     ]);
-    // 只展示 records；history 用于去重/统计可扩展
+    const merged = records
+      .map((r) => ({
+        ...history.find((h) => h.tweetId && h.tweetId === r.tweetId),
+        ...r,
+      }))
+      .map((r) => ({
+        ...r,
+        screenName: r.screenName || r.username || "(未知作者)",
+      }));
     const q = document.getElementById("q").value;
-    const list = applySearch(records, q);
+    const list = applySearch(merged, q);
     render(list);
   }
 

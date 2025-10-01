@@ -9,8 +9,9 @@ try {
 
 // ===== 复用 TwitterMediaHarvest 思路：捕获 X GraphQL 响应，按 tweetId 收集 mp4 变体 =====
 const VK_X_TWEET_MEDIA = new Map(); // tweetId -> Array<{url, bitrate, content_type}>
+const VK_X_MEDIA_METADATA = new Map(); // tweetId -> { variants, playbackUrl, source }
 
-function upsertTweetVariants(tweetId, variants) {
+function upsertTweetVariants(tweetId, variants, extra = {}) {
   if (!tweetId || !Array.isArray(variants) || variants.length === 0) return;
   const mp4s = variants.filter((v) => /mp4/i.test(v?.content_type || ""));
   if (mp4s.length === 0) return;
@@ -19,6 +20,11 @@ function upsertTweetVariants(tweetId, variants) {
   const map = new Map(existed.map((v) => [key(v), v]));
   mp4s.forEach((v) => map.set(key(v), v));
   VK_X_TWEET_MEDIA.set(tweetId, Array.from(map.values()));
+  VK_X_MEDIA_METADATA.set(tweetId, {
+    ...(VK_X_MEDIA_METADATA.get(tweetId) || {}),
+    variants,
+    ...extra,
+  });
 }
 
 function tryCollectFromLegacyTweet(node) {
@@ -59,7 +65,46 @@ function handleMediaResponseEvent(ev) {
   try {
     const detail = ev?.detail || {};
     const path = detail.path || "";
-    if (!/\/graphql\//.test(path)) return;
+    if (/\/graphql\//.test(path)) {
+      const body = detail.body;
+      if (!body) return;
+      const json = JSON.parse(body);
+      traverseCollectTweetVariants(json);
+      return;
+    }
+    if (/\/videos?\/tweet\/config\//.test(path)) {
+      const body = detail.body;
+      if (!body) return;
+      const json = JSON.parse(body);
+      const tweetId = json?.track?.id || json?.tweet_id || json?.tweetId;
+      const playbackUrl = json?.track?.playbackUrl || json?.playbackUrl;
+      const variants =
+        json?.track?.variants ||
+        json?.variants ||
+        json?.track?.media?.variants ||
+        [];
+      if (tweetId) {
+        upsertTweetVariants(tweetId, variants, {
+          playbackUrl,
+          source: "tweet_config",
+        });
+        if (playbackUrl) {
+          const mp4 = tryRewritePlaylistToMp4(playbackUrl);
+          if (mp4) {
+            upsertTweetVariants(
+              tweetId,
+              [{ url: mp4, content_type: "video/mp4" }],
+              {
+                playbackUrl,
+                rewrittenUrl: mp4,
+                source: "tweet_config_rewrite",
+              },
+            );
+          }
+        }
+      }
+      return;
+    }
     const body = detail.body;
     if (!body) return;
     const json = JSON.parse(body);
@@ -67,75 +112,32 @@ function handleMediaResponseEvent(ev) {
   } catch (_) {}
 }
 
-function injectXhrHookOnce() {
-  if (document.getElementById("vk-x-xhr-hook")) return;
-  const s = document.createElement("script");
-  s.id = "vk-x-xhr-hook";
-  s.textContent = `(() => {
-    const Pattern = /^(?:\\/i\\/api)?\\/graphql\\/[^/]+\\/(TweetDetail|TweetResultByRestId|UserTweets|UserMedia|HomeTimeline|HomeLatestTimeline|UserTweetsAndReplies|UserHighlightsTweets|UserArticlesTweets|Bookmarks|Likes|CommunitiesExploreTimeline|ListLatestTweetsTimeline)$/;
-    function validateUrl(u){
-      try { return new URL(u); } catch(_) { try { return (u instanceof URL)?u:undefined } catch(_) { return undefined } }
-    }
-    const _open = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = new Proxy(_open, {
-      apply(target, thisArg, args){
-        const [method, url] = args;
-        const u = validateUrl(url) || (typeof url === 'string' ? new URL(url, location.origin) : undefined);
-        if (u && Pattern.test(u.pathname)) {
-          thisArg.addEventListener('load', function(){
-            try {
-              if (this.status === 200) {
-                const ev = new CustomEvent('mh:media-response', { detail: { path: u.pathname, body: this.responseText, status: this.status } });
-                document.dispatchEvent(ev);
-              }
-            } catch(_) {}
-          });
-        }
-        return Reflect.apply(target, thisArg, args);
-      }
-    });
-  })();`;
-  (document.head || document.documentElement).appendChild(s);
-}
+let pageHooksInjected = false;
 
-function injectFetchHookOnce() {
-  if (document.getElementById("vk-x-fetch-hook")) return;
-  const s = document.createElement("script");
-  s.id = "vk-x-fetch-hook";
-  s.textContent = `(() => {
-    const Pattern = /^(?:\\/i\\/api)?\\/graphql\\/[^/]+\\/(TweetDetail|TweetResultByRestId|UserTweets|UserMedia|HomeTimeline|HomeLatestTimeline|UserTweetsAndReplies|UserHighlightsTweets|UserArticlesTweets|Bookmarks|Likes|CommunitiesExploreTimeline|ListLatestTweetsTimeline)$/;
-    function validateUrl(u){
-      try { return new URL(u); } catch(_) { try { return (u instanceof URL)?u:undefined } catch(_) { return undefined } }
-    }
-    const _fetch = window.fetch;
-    window.fetch = new Proxy(_fetch, {
-      apply(target, thisArg, args){
-        try {
-          const [input, init] = args;
-          const method = (init && init.method) || 'GET';
-          let href;
-          if (typeof input === 'string') href = input; else if (input && typeof input.url === 'string') href = input.url;
-          const u = href ? (validateUrl(href) || new URL(href, location.origin)) : undefined;
-          if (u && Pattern.test(u.pathname)) {
-            return Reflect.apply(target, thisArg, args).then(async (resp) => {
-              try {
-                const cloned = resp.clone();
-                const text = await cloned.text();
-                const ev = new CustomEvent('mh:media-response', { detail: { path: u.pathname, body: text, status: resp.status, method } });
-                document.dispatchEvent(ev);
-              } catch(_) {}
-              return resp;
-            });
-          }
-        } catch(_) {}
-        return Reflect.apply(target, thisArg, args);
-      }
-    });
-  })()`;
-  (document.head || document.documentElement).appendChild(s);
+function injectPageHooksOnce() {
+  if (pageHooksInjected) return;
+  const url = chrome.runtime?.getURL?.("injected-hooks.js");
+  if (!url) {
+    setTimeout(injectPageHooksOnce, 100);
+    return;
+  }
+  const script = document.createElement("script");
+  script.id = "vk-x-hooks";
+  script.type = "text/javascript";
+  script.src = url;
+  script.onload = () => {
+    script.remove();
+    pageHooksInjected = true;
+  };
+  script.onerror = () => {
+    pageHooksInjected = false;
+    setTimeout(injectPageHooksOnce, 500);
+  };
+  (document.head || document.documentElement).appendChild(script);
 }
 
 document.addEventListener("mh:media-response", handleMediaResponseEvent);
+document.addEventListener("mh:media-blob", () => {});
 
 // ===== 每条推文注入“下载”按钮 =====
 function getTweetIdFromArticle(article) {
@@ -177,10 +179,77 @@ function pickBestMp4(variants = []) {
   return mp4s[0];
 }
 
+function pickVideoUrlFromArticle(article) {
+  const urls = new Set();
+  const collect = (value) => {
+    if (!value) return;
+    const url = String(value).trim();
+    if (!url) return;
+    if (/^blob:/.test(url) || /^data:/.test(url)) return;
+    urls.add(url);
+  };
+
+  const videos = article.querySelectorAll("video");
+  videos.forEach((video) => {
+    collect(video.getAttribute?.("src"));
+    collect(video.src);
+    collect(video.currentSrc);
+    video.querySelectorAll("source").forEach((source) => {
+      collect(source.getAttribute?.("src"));
+      collect(source.src);
+    });
+  });
+
+  article.querySelectorAll("source").forEach((source) => {
+    collect(source.getAttribute?.("src"));
+    collect(source.src);
+  });
+
+  const preferences = [
+    (url) => /^https?:/.test(url) && /video\.twimg\.com/.test(url),
+    (url) => /^https?:/.test(url) && /\.mp4($|[?#])/.test(url),
+    (url) => {
+      if (/^https?:/.test(url) && /\.m3u8($|[?#])/.test(url)) {
+        const rewritten = tryRewritePlaylistToMp4(url);
+        if (rewritten) {
+          urls.add(rewritten);
+          return true;
+        }
+      }
+      return false;
+    },
+    (url) => /^https?:/.test(url),
+    () => true,
+  ];
+
+  const list = Array.from(urls);
+  for (const matcher of preferences) {
+    const found = list.find((url) => matcher(url));
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function buildFilename(meta = {}) {
   const { username = "user", userId = "uid", text = "" } = meta;
-  const safe = (s) => (s || "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+  const safe = (s) => (s || "").replace(/[\/:*?"<>|]/g, "_").slice(0, 60);
   return `${safe(username)}_${safe(userId)}_${safe(text)}_${Date.now()}.mp4`;
+}
+
+function selectBestUrl(tweetId) {
+  if (!tweetId) return undefined;
+  const meta = VK_X_MEDIA_METADATA.get(tweetId) || {};
+  const variants = VK_X_TWEET_MEDIA.get(tweetId) || meta.variants || [];
+  if (variants && variants.length) {
+    const best = pickBestMp4(variants);
+    if (best?.url) return best.url;
+  }
+  if (meta.rewrittenUrl) return meta.rewrittenUrl;
+  if (meta.playbackUrl) {
+    const mp4 = tryRewritePlaylistToMp4(meta.playbackUrl);
+    if (mp4) return mp4;
+  }
+  return undefined;
 }
 
 function getArticleMeta(article) {
@@ -250,14 +319,9 @@ function injectButtonForArticle(article) {
   btn.addEventListener("click", () => {
     const tweetId = getTweetIdFromArticle(article);
     const meta = getArticleMeta(article);
-    let url;
-    if (tweetId && VK_X_TWEET_MEDIA.has(tweetId)) {
-      const best = pickBestMp4(VK_X_TWEET_MEDIA.get(tweetId));
-      url = best && best.url;
-    }
+    let url = selectBestUrl(tweetId);
     if (!url) {
-      const v = article.querySelector("video, source");
-      url = v?.src || v?.getAttribute?.("src");
+      url = pickVideoUrlFromArticle(article);
     }
     if (!url) return;
     chrome.runtime.sendMessage(
@@ -299,10 +363,37 @@ function observeForVideos() {
   scanAndInjectButtons();
 }
 
+function tryRewritePlaylistToMp4(url) {
+  try {
+    const parsed = new URL(url, location.origin);
+    if (!/\.m3u8($|[?#])/.test(parsed.pathname)) return undefined;
+    const dir = parsed.href.replace(/playlist\.m3u8[^?#]*/, "");
+    const qualities = [
+      "1080x1920",
+      "1920x1080",
+      "1280x720",
+      "720x1280",
+      "720x720",
+      "540x960",
+      "480x852",
+      "360x640",
+      "320x568",
+    ];
+    const name = parsed.searchParams.get("name") || "video";
+    const query = parsed.search || "";
+    for (const quality of qualities) {
+      const candidate = `${dir}${quality}.mp4${query}`;
+      if (candidate) return candidate;
+    }
+    return parsed.href.replace(/playlist\.m3u8/, `${name}.mp4`);
+  } catch (_) {
+    return undefined;
+  }
+}
+
 (() => {
   if (location.host.includes("x.com")) {
-    injectXhrHookOnce();
-    injectFetchHookOnce();
+    injectPageHooksOnce();
     observeForVideos();
   }
 })();
