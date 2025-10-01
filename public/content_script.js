@@ -7,44 +7,141 @@ try {
   }
 } catch (_) {}
 
-// ===== 复用 TwitterMediaHarvest 思路：捕获 X GraphQL 响应，按 tweetId 收集 mp4 变体 =====
+// ===== 全局配置 =====
 const VK_X_TWEET_MEDIA = new Map(); // tweetId -> Array<{url, bitrate, content_type}>
-const VK_X_MEDIA_METADATA = new Map(); // tweetId -> { variants, playbackUrl, source }
+const VK_X_MEDIA_METADATA = new Map(); // tweetId -> metadata
+const VK_SETTINGS_KEY = "video_keep_settings";
+const VK_DEFAULT_TEMPLATE = "{screenName}_{userId}_{tweetTime}_{random}";
+let VK_FILENAME_TEMPLATE = VK_DEFAULT_TEMPLATE;
+
+function loadTemplateOnce() {
+  try {
+    if (chrome.storage?.local) {
+      chrome.storage.local.get([VK_SETTINGS_KEY], (result) => {
+        if (chrome.runtime?.lastError) return;
+        const value = result?.[VK_SETTINGS_KEY];
+        if (value?.filenameTemplate) {
+          VK_FILENAME_TEMPLATE = value.filenameTemplate;
+        }
+      });
+      chrome.storage.onChanged?.addListener((changes, areaName) => {
+        if (areaName !== "local") return;
+        const change = changes?.[VK_SETTINGS_KEY];
+        if (change?.newValue?.filenameTemplate) {
+          VK_FILENAME_TEMPLATE = change.newValue.filenameTemplate;
+        }
+      });
+    } else {
+      const cached = localStorage.getItem(VK_SETTINGS_KEY);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed.filenameTemplate) {
+            VK_FILENAME_TEMPLATE = parsed.filenameTemplate;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+
+loadTemplateOnce();
+
+function mergeTweetMetadata(tweetId, patch) {
+  if (!tweetId || !patch) return;
+  const existed = VK_X_MEDIA_METADATA.get(tweetId) || {};
+  VK_X_MEDIA_METADATA.set(tweetId, { ...existed, ...patch });
+}
 
 function upsertTweetVariants(tweetId, variants, extra = {}) {
-  if (!tweetId || !Array.isArray(variants) || variants.length === 0) return;
+  if (!tweetId || !Array.isArray(variants) || variants.length === 0) {
+    mergeTweetMetadata(tweetId, extra);
+    return;
+  }
   const mp4s = variants.filter((v) => /mp4/i.test(v?.content_type || ""));
-  if (mp4s.length === 0) return;
+  if (mp4s.length === 0) {
+    mergeTweetMetadata(tweetId, extra);
+    return;
+  }
   const existed = VK_X_TWEET_MEDIA.get(tweetId) || [];
   const key = (v) => `${v.url}`;
   const map = new Map(existed.map((v) => [key(v), v]));
   mp4s.forEach((v) => map.set(key(v), v));
   VK_X_TWEET_MEDIA.set(tweetId, Array.from(map.values()));
-  VK_X_MEDIA_METADATA.set(tweetId, {
-    ...(VK_X_MEDIA_METADATA.get(tweetId) || {}),
-    variants,
-    ...extra,
-  });
+  mergeTweetMetadata(tweetId, { variants: mp4s, ...extra });
 }
 
-function tryCollectFromLegacyTweet(node) {
-  const legacy = node?.legacy;
-  if (!legacy || typeof legacy !== "object") return;
-  const tweetId = legacy.id_str || legacy.id;
-  const media = legacy.extended_entities?.media || legacy.entities?.media;
-  if (!Array.isArray(media)) return;
+function parseTwitterDate(str) {
+  if (!str) return undefined;
+  const ts = Date.parse(str);
+  if (Number.isNaN(ts)) return undefined;
+  return ts;
+}
+
+function extractUserFromNode(node) {
+  const userResult =
+    node?.core?.user_results?.result ||
+    node?.core?.user_result_by_id?.result ||
+    node?.author?.result ||
+    node?.author ||
+    node?.user_result?.result;
+  const legacy = userResult?.legacy || node?.user?.legacy || userResult;
+  if (!legacy) return {};
+  return {
+    screenName:
+      legacy.screen_name ||
+      legacy.username ||
+      userResult?.legacy?.screen_name ||
+      userResult?.legacy?.username,
+    userId: legacy.id_str || legacy.id || userResult?.rest_id,
+    name: legacy.name,
+  };
+}
+
+function handleTweetLegacy(container) {
+  if (!container) return;
+  const legacy = container.legacy || container.tweet?.legacy || container;
+  if (!legacy) return;
+  const tweetId =
+    container.rest_id || container.tweet?.rest_id || legacy.id_str || legacy.id;
+  if (!tweetId) return;
+
+  const createdAt = parseTwitterDate(legacy.created_at);
+  const text = legacy.full_text || legacy.text || legacy.extended?.tweet_text;
+  const userInfo = extractUserFromNode(container);
+  const userId = legacy.user_id_str || legacy.user_id || userInfo.userId;
+  const screenName = userInfo.screenName;
+
+  mergeTweetMetadata(tweetId, {
+    tweetCreatedAt: createdAt,
+    text: text || undefined,
+    screenName: screenName || undefined,
+    userId: userId || undefined,
+    tweetId,
+  });
+
+  const media = legacy.extended_entities?.media || legacy.entities?.media || [];
   media.forEach((m) => {
     const variants = m?.video_info?.variants || [];
-    upsertTweetVariants(tweetId, variants || []);
+    upsertTweetVariants(tweetId, variants, {
+      tweetCreatedAt: createdAt,
+      text: text || undefined,
+      screenName: screenName || undefined,
+      userId: userId || undefined,
+      tweetId,
+    });
   });
 }
 
 function tryCollectFromTweetNode(node) {
   if (!node || typeof node !== "object") return;
-  if (node.legacy) tryCollectFromLegacyTweet(node);
-  if (node.tweet) tryCollectFromLegacyTweet(node.tweet);
+  handleTweetLegacy(node);
+  if (node.tweet) handleTweetLegacy(node.tweet);
   if (node.result) tryCollectFromTweetNode(node.result);
-  if (node.rest_id && node.legacy) tryCollectFromLegacyTweet(node);
+  if (node.tweet_results) tryCollectFromTweetNode(node.tweet_results);
+  if (node.threaded_conversation_with_injections_v2) {
+    tryCollectFromTweetNode(node.threaded_conversation_with_injections_v2);
+  }
 }
 
 function traverseCollectTweetVariants(obj) {
@@ -84,6 +181,11 @@ function handleMediaResponseEvent(ev) {
         json?.track?.media?.variants ||
         [];
       if (tweetId) {
+        mergeTweetMetadata(tweetId, {
+          tweetId,
+          screenName: json?.track?.author?.screen_name,
+          userId: json?.track?.author?.id_str,
+        });
         upsertTweetVariants(tweetId, variants, {
           playbackUrl,
           source: "tweet_config",
@@ -139,37 +241,64 @@ function injectPageHooksOnce() {
 document.addEventListener("mh:media-response", handleMediaResponseEvent);
 document.addEventListener("mh:media-blob", () => {});
 
-// ===== 每条推文注入“下载”按钮 =====
-function getTweetIdFromArticle(article) {
-  // 优先：包含 <time> 的永久链接（更可能指向主贴）
-  const timeEl = article.querySelector('a[href*="/status/"] time');
-  if (timeEl) {
-    const a = timeEl.closest('a[href*="/status/"]');
-    if (a && a.getAttribute) {
-      const href = a.getAttribute("href") || "";
-      const m =
-        href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
-      if (m) return m[1];
-    }
+function sanitizeFilename(value) {
+  return String(value || "")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 80);
+}
+
+function generateRandomString(len = 6) {
+  const chars = "ABCDEFGHJKMNPQRSTWXYZ2345678";
+  let out = "";
+  for (let i = 0; i < len; i += 1) {
+    out += chars[Math.floor(Math.random() * chars.length)];
   }
-  // 次选：role=link 的状态链接
-  const roleLink = article.querySelector('a[role="link"][href*="/status/"]');
-  if (roleLink && roleLink.getAttribute) {
-    const href = roleLink.getAttribute("href") || "";
-    const m = href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
-    if (m) return m[1];
+  return out;
+}
+
+function formatTweetTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => `${n}`.padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
+
+function buildFilename(meta = {}) {
+  const template = VK_FILENAME_TEMPLATE || VK_DEFAULT_TEMPLATE;
+  const tweetTime = meta.tweetCreatedAt
+    ? formatTweetTime(meta.tweetCreatedAt)
+    : formatTweetTime(Date.now());
+  const replacements = {
+    screenName: sanitizeFilename(meta.screenName || meta.handle || "user"),
+    username: sanitizeFilename(meta.username || meta.displayName || "user"),
+    tweetTime: sanitizeFilename(tweetTime || "time"),
+    tweetId: sanitizeFilename(meta.tweetId || "tweet"),
+    random: sanitizeFilename(generateRandomString(6)),
+    text: sanitizeFilename((meta.text || "").slice(0, 30)),
+  };
+
+  let result = template.replace(
+    /\{(screenName|username|tweetTime|tweetId|random|text)\}/g,
+    (match, key) => {
+      return replacements[key] || "";
+    },
+  );
+
+  result = result.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  if (!/\.\w{2,4}$/.test(result)) {
+    result = `${result || "video"}.mp4`;
   }
-  // 兜底：任意 /status/ 链接
-  const any = article.querySelector('a[href*="/status/"]');
-  if (any && any.getAttribute) {
-    const href = any.getAttribute("href") || "";
-    const m = href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
-    if (m) return m[1];
-  }
-  // 超兜底：自定义属性
-  const el = article.querySelector("[data-tweet-id]");
-  if (el) return el.getAttribute("data-tweet-id");
-  return undefined;
+  return result;
+}
+
+function getTweetMetadata(tweetId) {
+  if (!tweetId) return {};
+  return VK_X_MEDIA_METADATA.get(tweetId) || {};
 }
 
 function pickBestMp4(variants = []) {
@@ -230,40 +359,67 @@ function pickVideoUrlFromArticle(article) {
   return undefined;
 }
 
-function buildFilename(meta = {}) {
-  const { username = "user", userId = "uid", text = "" } = meta;
-  const safe = (s) => (s || "").replace(/[\/:*?"<>|]/g, "_").slice(0, 60);
-  return `${safe(username)}_${safe(userId)}_${safe(text)}_${Date.now()}.mp4`;
+function parseNamesFromArticle(article) {
+  const block = article.querySelector('[data-testid="User-Name"]');
+  let displayName;
+  let handle;
+  if (block) {
+    const spanNodes = block.querySelectorAll("span");
+    spanNodes.forEach((node) => {
+      if (handle && displayName) return;
+      const text = node?.textContent?.trim();
+      if (!text) return;
+      if (text.startsWith("@")) {
+        handle = text.slice(1);
+      } else if (!displayName) {
+        displayName = text;
+      }
+    });
+  }
+  if (!handle) {
+    const handleNode = article.querySelector(
+      '[data-testid="User-Name"] a[role="link"][tabindex="-1"] span',
+    );
+    const text = handleNode?.textContent?.trim();
+    if (text?.startsWith("@")) handle = text.slice(1);
+  }
+  if (!displayName) {
+    const displayNode = article.querySelector(
+      '[data-testid="User-Name"] span[dir="ltr"], [data-testid="User-Name"] div[dir="ltr"]',
+    );
+    displayName = displayNode?.textContent?.trim();
+  }
+  return { displayName, handle };
 }
 
-function selectBestUrl(tweetId) {
-  if (!tweetId) return undefined;
-  const meta = VK_X_MEDIA_METADATA.get(tweetId) || {};
-  const variants = VK_X_TWEET_MEDIA.get(tweetId) || meta.variants || [];
-  if (variants && variants.length) {
-    const best = pickBestMp4(variants);
-    if (best?.url) return best.url;
-  }
-  if (meta.rewrittenUrl) return meta.rewrittenUrl;
-  if (meta.playbackUrl) {
-    const mp4 = tryRewritePlaylistToMp4(meta.playbackUrl);
-    if (mp4) return mp4;
-  }
-  return undefined;
-}
-
-function getArticleMeta(article) {
+function getArticleMeta(article, tweetId) {
+  const stored = getTweetMetadata(tweetId);
+  const { displayName, handle } = parseNamesFromArticle(article);
   const username =
+    stored.username ||
+    displayName ||
     article
-      .querySelector('a[role="link"][href^="/"], header a')
-      ?.textContent?.trim() || "user";
+      .querySelector('a[role="link"][href^="/"] header span')
+      ?.textContent?.trim() ||
+    "user";
+  const resolvedHandle =
+    stored.screenName || handle || stored.username || username;
+
   const text =
+    stored.text ||
     article
       .querySelector('h1, h2, h3, [data-testid="tweetText"], article')
       ?.textContent?.trim()
-      ?.slice(0, 30) || "";
-  const userId = location.pathname.split("/").filter(Boolean)[0] || "uid";
-  return { username, userId, text };
+      ?.slice(0, 30) ||
+    "";
+  return {
+    username,
+    displayName: username,
+    screenName: resolvedHandle,
+    handle: resolvedHandle,
+    text,
+    tweetCreatedAt: stored.tweetCreatedAt,
+  };
 }
 
 function makeDownloadButton() {
@@ -309,6 +465,50 @@ function checkAndMarkDownloaded(article, btn) {
   } catch (_) {}
 }
 
+function getTweetIdFromArticle(article) {
+  const timeEl = article.querySelector('a[href*="/status/"] time');
+  if (timeEl) {
+    const a = timeEl.closest('a[href*="/status/"]');
+    if (a && a.getAttribute) {
+      const href = a.getAttribute("href") || "";
+      const m =
+        href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
+      if (m) return m[1];
+    }
+  }
+  const roleLink = article.querySelector('a[role="link"][href*="/status/"]');
+  if (roleLink && roleLink.getAttribute) {
+    const href = roleLink.getAttribute("href") || "";
+    const m = href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
+    if (m) return m[1];
+  }
+  const any = article.querySelector('a[href*="/status/"]');
+  if (any && any.getAttribute) {
+    const href = any.getAttribute("href") || "";
+    const m = href.match(/\/_?status\/(\d+)/) || href.match(/\/status\/(\d+)/);
+    if (m) return m[1];
+  }
+  const el = article.querySelector("[data-tweet-id]");
+  if (el) return el.getAttribute("data-tweet-id");
+  return undefined;
+}
+
+function selectBestUrl(tweetId) {
+  if (!tweetId) return undefined;
+  const meta = VK_X_MEDIA_METADATA.get(tweetId) || {};
+  const variants = VK_X_TWEET_MEDIA.get(tweetId) || meta.variants || [];
+  if (variants && variants.length) {
+    const best = pickBestMp4(variants);
+    if (best?.url) return best.url;
+  }
+  if (meta.rewrittenUrl) return meta.rewrittenUrl;
+  if (meta.playbackUrl) {
+    const mp4 = tryRewritePlaylistToMp4(meta.playbackUrl);
+    if (mp4) return mp4;
+  }
+  return undefined;
+}
+
 function injectButtonForArticle(article) {
   if (!article || article.dataset.vkBtnInjected === "1") return;
   const actionBar =
@@ -318,21 +518,30 @@ function injectButtonForArticle(article) {
   const btn = makeDownloadButton();
   btn.addEventListener("click", () => {
     const tweetId = getTweetIdFromArticle(article);
-    const meta = getArticleMeta(article);
+    const metaFromArticle = getArticleMeta(article, tweetId);
+    const storeMeta = getTweetMetadata(tweetId);
+    const combinedMeta = {
+      ...storeMeta,
+      ...metaFromArticle,
+      tweetId: tweetId || storeMeta.tweetId,
+    };
     let url = selectBestUrl(tweetId);
     if (!url) {
       url = pickVideoUrlFromArticle(article);
     }
     if (!url) return;
+    const filename = buildFilename(combinedMeta);
     chrome.runtime.sendMessage(
       {
         type: "VK_DOWNLOAD",
         payload: {
           url,
-          filename: buildFilename(meta),
+          filename,
           tweetId: tweetId || null,
-          screenName: meta.username || null,
-          text: meta.text || null,
+          screenName: combinedMeta.screenName || combinedMeta.username || null,
+          text: combinedMeta.text || null,
+          userId: combinedMeta.screenName || null,
+          tweetCreatedAt: combinedMeta.tweetCreatedAt || null,
         },
       },
       (res) => {

@@ -55,6 +55,21 @@ async function withStore(mode, fn) {
   });
 }
 
+function sanitizeFilename(value) {
+  return String(value || "")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .slice(0, 60);
+}
+
+function generateRandomString(len = 6) {
+  const chars = "ABCDEFGHJKMNPQRSTWXYZ2345678";
+  let out = "";
+  for (let i = 0; i < len; i += 1) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
+
 export async function addDownloadRecord(record) {
   const now = Date.now();
   const id = record.id ?? record.downloadId ?? crypto.randomUUID();
