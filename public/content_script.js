@@ -32,6 +32,26 @@ const TEMPLATE_KEYS = [
 const mediaCache = new Map();
 let filenameTemplate = DEFAULT_TEMPLATE;
 
+// ===================== 连续下载（增量监听）配置与状态 =====================
+const INCR_MAX_TASKS = 500; // 最大入队任务数上限
+const INCR_MAX_DURATION_MS = 3 * 60 * 1000; // 最长运行时长 3 分钟
+const INCR_BATCH_INTERVAL_MS = 800; // 批量下发的节流间隔
+
+const incremental = {
+  enabled: false,
+  startedAt: 0,
+  processedTweetIds: new Set(),
+  seenTaskKeys: new Set(),
+  pendingTasks: [],
+  flushTimer: null,
+  io: null,
+  btn: null,
+};
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // ===================== 设置读取 =====================
 function hydrateTemplate() {
   const storage = chrome.storage?.local;
@@ -68,6 +88,36 @@ function normalizeImage(url) {
   return /:(?:large|orig)$/i.test(url) ? url : `${url}:orig`;
 }
 
+function normalizeVideoUrl(url) {
+  try {
+    const u = new URL(url, location.origin);
+    const parts = (u.pathname || "").split("/");
+    const basename = parts[parts.length - 1] || u.pathname || "";
+    return `${u.host}/${basename}`;
+  } catch (_) {
+    return String(url || "");
+  }
+}
+
+// 规范化视频 URL 用于去重：去掉查询串与 hash，仅保留路径；对 video.twimg.com 常见 mp4 补正规则
+// 旧的标准化函数已废弃，统一使用 videoFamilyKey
+
+// 提取 Twitter 视频的“家族键”，用于把不同清晰度/来源的同一视频统一到一组
+function videoFamilyKey(url) {
+  try {
+    const u = new URL(url, location.origin);
+    const path = String(u.pathname || "");
+    // 优先使用视频 track ID
+    let m = path.match(/\/(?:ext_tw_video|amplify_video)\/(\d+)/);
+    if (m && m[1]) return `id:${m[1]}`;
+    // 其次移除 /vid/<WxH>/ 与文件名，按目录去重
+    const strip = path.replace(/\/vid\/\d+x\d+\/[A-Za-z0-9_\-\.]+$/, "/");
+    return `dir:${u.host}${strip}`;
+  } catch (_) {
+    return `norm:${normalizeVideoUrl(url)}`;
+  }
+}
+
 function mergeMetadata(tweetId, patch = {}) {
   if (!tweetId) return;
   const prev = mediaCache.get(tweetId) || {};
@@ -82,7 +132,29 @@ function mergeMetadata(tweetId, patch = {}) {
     next.images = merged;
   }
 
+  // 合并 variants：累积并按 url 去重
+  if (patch.variants && Array.isArray(patch.variants)) {
+    const merged = [...(prev.variants || [])];
+    const seen = new Set(merged.map((v) => v?.url).filter(Boolean));
+    patch.variants.forEach((v) => {
+      const u = v?.url;
+      if (u && !seen.has(u)) {
+        seen.add(u);
+        merged.push(v);
+      }
+    });
+    next.variants = merged;
+  }
+
   mediaCache.set(tweetId, next);
+}
+
+function addVideoUrl(tweetId, url) {
+  if (!tweetId || !url) return;
+  const meta = mediaCache.get(tweetId) || {};
+  const videos = Array.isArray(meta.videos) ? meta.videos.slice() : [];
+  if (!videos.includes(url)) videos.push(url);
+  mediaCache.set(tweetId, { ...meta, videos });
 }
 
 function collectImages(tweetId, media) {
@@ -147,7 +219,14 @@ function parseTweetNode(node) {
 
   const media = legacy.extended_entities?.media || legacy.entities?.media || [];
   collectImages(tweetId, media);
-  media.forEach((m) => collectVariants(tweetId, m?.video_info?.variants, {}));
+  media.forEach((m) => {
+    collectVariants(tweetId, m?.video_info?.variants, {});
+    const v = (m?.video_info?.variants || [])
+      .filter((x) => /mp4/i.test(x?.content_type || ""))
+      .map((x) => x?.url)
+      .filter(Boolean);
+    v.forEach((u) => addVideoUrl(tweetId, u));
+  });
 }
 
 function walkAny(obj) {
@@ -293,13 +372,59 @@ function rewritePlaylist(url) {
 function selectVideoUrl(tweetId) {
   const meta = mediaCache.get(tweetId) || {};
   const variants = meta.variants || [];
-  const best = variants
+  const urls = variants
     .filter((v) => /mp4/i.test(v?.content_type || ""))
-    .sort((a, b) => (b?.bitrate || 0) - (a?.bitrate || 0))[0];
-  if (best?.url) return best.url;
-  if (meta.rewrittenUrl) return meta.rewrittenUrl;
-  if (meta.playbackUrl) return rewritePlaylist(meta.playbackUrl);
-  return undefined;
+    .sort((a, b) => (b?.bitrate || 0) - (a?.bitrate || 0))
+    .map((v) => v?.url)
+    .filter(Boolean);
+  const extra = Array.isArray(meta.videos) ? meta.videos : [];
+  const all = [
+    ...urls,
+    ...(meta.rewrittenUrl ? [meta.rewrittenUrl] : []),
+    ...(meta.playbackUrl ? [rewritePlaylist(meta.playbackUrl)] : []),
+    ...extra,
+  ].filter(Boolean);
+  return all[0];
+}
+
+// 返回该推文可用的所有视频直链，去重并保序（variants 优先，其次 rewrites/playbackUrl，最后补齐 extra）
+function selectAllVideoUrls(tweetId) {
+  const meta = mediaCache.get(tweetId) || {};
+  const variants = Array.isArray(meta.variants) ? meta.variants : [];
+  // 将 variants 按“视频家族键”（ext_tw_video / amplify_video 的数值ID或目录）分组，每组取最高 bitrate 的 mp4
+  const groups = new Map();
+  variants
+    .filter((v) => /mp4/i.test(v?.content_type || ""))
+    .forEach((v) => {
+      const url = v?.url;
+      if (!url) return;
+      const familyKey = videoFamilyKey(url);
+      const prev = groups.get(familyKey);
+      if (!prev || (v?.bitrate || 0) > (prev?.bitrate || 0))
+        groups.set(familyKey, v);
+    });
+  const bestPerGroup = Array.from(groups.values())
+    .sort((a, b) => (b?.bitrate || 0) - (a?.bitrate || 0))
+    .map((v) => v.url);
+
+  const extras = [
+    ...(meta.rewrittenUrl ? [meta.rewrittenUrl] : []),
+    ...(meta.playbackUrl ? [rewritePlaylist(meta.playbackUrl)] : []),
+    ...(Array.isArray(meta.videos) ? meta.videos : []),
+  ].filter(Boolean);
+
+  // 合并 extras，但按“视频家族键”去重，避免与 bestPerGroup 重复
+  const uniq = [];
+  const seen = new Set(bestPerGroup.map((u) => videoFamilyKey(u)));
+  bestPerGroup.forEach((u) => uniq.push(u));
+  extras.forEach((u) => {
+    const key = videoFamilyKey(u);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      uniq.push(u);
+    }
+  });
+  return uniq;
 }
 
 function pickHtmlVideo(article) {
@@ -310,7 +435,32 @@ function pickHtmlVideo(article) {
       if (val && /^https?:/.test(val) && !/^blob:/.test(val)) urls.add(val);
     });
   });
-  return Array.from(urls).find((u) => VIDEO_PATTERN.test(u));
+  // 从 poster 派生可回写的 mp4（amplify_video_thumb -> rewritePlaylist）
+  article.querySelectorAll("video[poster]").forEach((v) => {
+    const poster = v.getAttribute("poster");
+    const m = String(poster || "").match(/amplify_video_thumb\/(\d+)\//);
+    if (m && m[1]) {
+      const meta = mediaCache.get(m[1]);
+      const u = meta?.playbackUrl
+        ? rewritePlaylist(meta.playbackUrl)
+        : undefined;
+      if (u) urls.add(u);
+    }
+  });
+  // 规范化并去重，避免同一资源多次添加（用视频家族键去重）
+  const uniq = [];
+  const seen = new Set();
+  Array.from(urls)
+    .filter((u) => VIDEO_PATTERN.test(u))
+    .forEach((u) => {
+      const key = videoFamilyKey(u);
+      if (!key) return;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniq.push(u);
+      }
+    });
+  return uniq;
 }
 
 function parseNames(article) {
@@ -398,12 +548,108 @@ function currentTweetId(article) {
   );
 }
 
+function findTweetIdsInArticle(root) {
+  const ids = new Set();
+  try {
+    root.querySelectorAll('a[href*="/status/"]').forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      const m = href.match(/\/status\/(\d+)/);
+      if (m && m[1]) ids.add(m[1]);
+    });
+  } catch (_) {}
+  return Array.from(ids);
+}
+
+function extractPosterIdsFromArticle(root) {
+  const ids = new Set();
+  const tryExtract = (url) => {
+    const m = String(url || "").match(/amplify_video_thumb\/(\d+)\//);
+    if (m && m[1]) ids.add(m[1]);
+  };
+  try {
+    root
+      .querySelectorAll(
+        'video[poster], [style*="amplify_video_thumb"], img[src*="amplify_video_thumb"]',
+      )
+      .forEach((el) => {
+        const poster = el.getAttribute && el.getAttribute("poster");
+        if (poster) tryExtract(poster);
+        const src = el.getAttribute && el.getAttribute("src");
+        if (src) tryExtract(src);
+        const style = el.getAttribute && el.getAttribute("style");
+        if (style) {
+          const m = style.match(/url\(\"?(.*?)\"?\)/);
+          if (m && m[1]) tryExtract(m[1]);
+        }
+      });
+  } catch (_) {}
+  return Array.from(ids);
+}
+
+async function waitForMp4ByTrackIds(trackIds, attempts = 6, intervalMs = 250) {
+  const collected = new Set();
+  for (let i = 0; i < attempts; i += 1) {
+    trackIds.forEach((id) => {
+      const url = selectVideoUrl(id);
+      if (url) collected.add(url);
+    });
+    if (collected.size >= trackIds.length) break;
+    await sleep(intervalMs);
+  }
+  return Array.from(collected);
+}
+
 function scheduleDownload(payload) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: "VK_DOWNLOAD", payload }, (res) => {
-      if (res && !res.ok) console.warn("download failed", res.error);
-      resolve(res);
-    });
+    try {
+      if (!chrome?.runtime?.id) {
+        resolve({ ok: false, error: "extension context invalidated" });
+        return;
+      }
+      chrome.runtime.sendMessage({ type: "VK_DOWNLOAD", payload }, (res) => {
+        if (chrome.runtime?.lastError) {
+          console.warn("runtime sendMessage error", chrome.runtime.lastError);
+          resolve({
+            ok: false,
+            error: chrome.runtime.lastError.message || "runtime error",
+          });
+          return;
+        }
+        if (res && !res.ok) console.warn("download failed", res.error);
+        resolve(res);
+      });
+    } catch (error) {
+      console.warn("sendMessage failed", error);
+      resolve({ ok: false, error: error?.message || String(error) });
+    }
+  });
+}
+
+function scheduleBatchDownload(items) {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome?.runtime?.id) {
+        resolve({ ok: false, error: "extension context invalidated" });
+        return;
+      }
+      chrome.runtime.sendMessage(
+        { type: "VK_DOWNLOAD_BATCH", payload: { items } },
+        (res) => {
+          if (chrome.runtime?.lastError) {
+            console.warn("runtime sendMessage error", chrome.runtime.lastError);
+            resolve({
+              ok: false,
+              error: chrome.runtime.lastError.message || "runtime error",
+            });
+            return;
+          }
+          resolve(res);
+        },
+      );
+    } catch (error) {
+      console.warn("sendMessage failed", error);
+      resolve({ ok: false, error: error?.message || String(error) });
+    }
   });
 }
 
@@ -417,7 +663,11 @@ function injectButton(article) {
   const tweetId = currentTweetId(article);
   const meta = readArticleMeta(article, tweetId);
   const hasImages = meta.images && meta.images.length > 0;
-  const hasVideo = !!(selectVideoUrl(tweetId) || pickHtmlVideo(article));
+  const hasVideo =
+    (selectAllVideoUrls(tweetId) || []).length > 0 ||
+    (pickHtmlVideo(article) || []).length > 0;
+  // 仅在存在图片或视频时显示下载按钮
+  if (!hasImages && !hasVideo) return;
   const btn = makeButton(
     [hasVideo ? "下载视频" : null, hasImages ? "下载图片" : null]
       .filter(Boolean)
@@ -426,39 +676,115 @@ function injectButton(article) {
 
   btn.addEventListener("click", async () => {
     const hydrate = readArticleMeta(article, tweetId);
-    const filename = buildFilename(hydrate);
-    const tasks = [];
-
-    const videoUrl = selectVideoUrl(tweetId) || pickHtmlVideo(article);
-    if (videoUrl) {
-      tasks.push(
-        scheduleDownload({
-          url: videoUrl,
-          filename,
-          tweetId,
-          screenName: hydrate.screenName,
-          text: hydrate.text,
-          tweetCreatedAt: hydrate.tweetCreatedAt,
-        }),
-      );
+    let tasks = buildTasksFromArticle(article);
+    // 若只解析到1个视频，尝试轻微滚动以促发懒加载，再次构建任务
+    const videoCount = tasks.filter((t) =>
+      /video\.twimg\.com|\.mp4/i.test(t.url),
+    ).length;
+    if (videoCount <= 1) {
+      try {
+        const prevH = article.scrollHeight || 0;
+        article.scrollIntoView({ block: "center" });
+        window.scrollBy(0, 120);
+        await sleep(120);
+        const now = article.scrollHeight || 0;
+        if (now >= prevH) {
+          const retry = buildTasksFromArticle(article);
+          // 合并去重
+          const keys = new Set(tasks.map((t) => `${t.url}::${t.filename}`));
+          retry.forEach((t) => {
+            const k = `${t.url}::${t.filename}`;
+            if (!keys.has(k)) {
+              keys.add(k);
+              tasks.push(t);
+            }
+          });
+        }
+      } catch (_) {}
     }
-
-    (hydrate.images || []).forEach((img, index) => {
-      const picName = `${filename.replace(/\.mp4$/i, "")}_${String(index + 1).padStart(2, "0")}.jpg`;
-      tasks.push(
-        scheduleDownload({
-          url: img.url,
-          filename: picName,
-          tweetId,
-          screenName: hydrate.screenName,
-          text: hydrate.text,
-          tweetCreatedAt: hydrate.tweetCreatedAt,
-        }),
-      );
-    });
-
+    // 额外处理：若是 blob 播放的首个视频，基于 poster trackId 等待解析到 mp4 后补充
+    try {
+      const posterIds = extractPosterIdsFromArticle(article);
+      if (Array.isArray(posterIds) && posterIds.length) {
+        const awaited = await waitForMp4ByTrackIds(posterIds, 6, 250);
+        if (Array.isArray(awaited) && awaited.length) {
+          const isVideoTask = (t) => /video\.twimg\.com|\.mp4/i.test(t.url);
+          const existingVideoUrls = tasks.filter(isVideoTask).map((t) => t.url);
+          const existingKeys = new Set(
+            existingVideoUrls.map((u) => videoFamilyKey(u)),
+          );
+          const filenameBase = buildFilename(hydrate);
+          let idxStart = existingVideoUrls.length;
+          awaited.forEach((u) => {
+            const key = videoFamilyKey(u);
+            if (!key || existingKeys.has(key)) return;
+            const idx = idxStart;
+            const name =
+              idx === 0
+                ? filenameBase
+                : filenameBase.replace(
+                    /\.mp4$/i,
+                    `_${String(idx + 1).padStart(2, "0")}.mp4`,
+                  );
+            tasks.push({
+              url: u,
+              filename: name,
+              tweetId,
+              screenName: hydrate.screenName,
+              text: hydrate.text,
+              tweetCreatedAt: hydrate.tweetCreatedAt,
+            });
+            existingKeys.add(key);
+            idxStart += 1;
+          });
+        }
+      }
+    } catch (_) {}
+    // 若仍未构建出任务，做一次保底收集（基于当前可见 DOM 与已解析元数据）
+    if (!tasks.length) {
+      try {
+        const fallbackUrls = new Set();
+        (selectAllVideoUrls(tweetId) || []).forEach((u) => fallbackUrls.add(u));
+        (pickHtmlVideo(article) || []).forEach((u) => fallbackUrls.add(u));
+        const uniqUrls = [];
+        const seenKeys = new Set();
+        Array.from(fallbackUrls).forEach((u) => {
+          const k = videoFamilyKey(u);
+          if (!k || seenKeys.has(k)) return;
+          seenKeys.add(k);
+          uniqUrls.push(u);
+        });
+        const base = buildFilename(hydrate);
+        uniqUrls.forEach((u, idx) => {
+          const name =
+            idx === 0
+              ? base
+              : base.replace(
+                  /\.mp4$/i,
+                  `_${String(idx + 1).padStart(2, "0")}.mp4`,
+                );
+          tasks.push({
+            url: u,
+            filename: name,
+            tweetId,
+            screenName: hydrate.screenName,
+            text: hydrate.text,
+            tweetCreatedAt: hydrate.tweetCreatedAt,
+          });
+        });
+      } catch (_) {}
+    }
     if (!tasks.length) return;
-    await Promise.all(tasks);
+    for (const task of tasks) {
+      try {
+        const withExt = /\.\w{2,4}$/i.test(task.filename)
+          ? task.filename
+          : task.url.includes("twimg.com") && /\.mp4/i.test(task.url)
+            ? `${task.filename}.mp4`
+            : task.filename;
+        await scheduleDownload({ ...task, filename: withExt });
+      } catch (_) {}
+    }
     markDownloaded(btn);
   });
 
@@ -475,6 +801,7 @@ function injectButton(article) {
 
 const observer = new MutationObserver(() => {
   document.querySelectorAll('article[role="article"]').forEach(injectButton);
+  insertGlobalDownloadButton();
 });
 
 function init() {
@@ -485,8 +812,304 @@ function init() {
     subtree: true,
   });
   document.querySelectorAll('article[role="article"]').forEach(injectButton);
+  insertGlobalDownloadButton();
 }
 
 if (location.host.includes("x.com")) {
   init();
+}
+
+// ===================== 个人页一键下载按钮 =====================
+function isProfilePage() {
+  try {
+    const seg = location.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (seg.length === 1 && seg[0]) return true;
+    if (seg.length === 2 && ["with_replies", "media", "likes"].includes(seg[1]))
+      return true;
+  } catch (_) {}
+  return false;
+}
+
+function buildTasksFromArticle(article) {
+  const tweetId = currentTweetId(article);
+  const meta = readArticleMeta(article, tweetId);
+  // 过滤转推（含“Reposted”/“转推”等标识），但允许本人转推
+  const social = article.querySelector('[data-testid="socialContext"]');
+  let isRetweet = !!social || /\/retweet\//i.test(article.innerHTML || "");
+  if (isRetweet) {
+    try {
+      const handle = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0];
+      const selfLink = handle && social?.querySelector(`a[href="/${handle}"]`);
+      if (selfLink) isRetweet = false;
+    } catch (_) {}
+  }
+  if (isRetweet) return [];
+  const tasks = [];
+  // 收集所有视频直链（GraphQL variants + DOM source）
+  const urls = new Set();
+  const allForThis = selectAllVideoUrls(tweetId) || [];
+  allForThis.forEach((u) => urls.add(u));
+  const htmlVideos = pickHtmlVideo(article) || [];
+  htmlVideos.forEach((u) => urls.add(u));
+  // 收集文章内引用的其它推文的视频
+  const innerIds = findTweetIdsInArticle(article).filter(
+    (id) => id !== tweetId,
+  );
+  innerIds.forEach((id) => {
+    const list = selectAllVideoUrls(id) || [];
+    list.forEach((u) => urls.add(u));
+  });
+  // 通过 poster 提取的 video track id（针对 blob: 场景）
+  const posterIds = extractPosterIdsFromArticle(article);
+  posterIds.forEach((id) => {
+    const list = selectAllVideoUrls(id) || [];
+    list.forEach((u) => urls.add(u));
+  });
+  const filenameBase = buildFilename(meta);
+  // 最终用标准化 key 去重，避免同一视频从不同来源重复
+  const uniqueByKey = [];
+  const seenKeys = new Set();
+  Array.from(urls).forEach((u) => {
+    const key = videoFamilyKey(u);
+    if (!key) return;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueByKey.push(u);
+    }
+  });
+  uniqueByKey.forEach((u, idx) => {
+    const name =
+      idx === 0
+        ? filenameBase
+        : filenameBase.replace(
+            /\.mp4$/i,
+            `_${String(idx + 1).padStart(2, "0")}.mp4`,
+          );
+    tasks.push({
+      url: u,
+      filename: name,
+      tweetId,
+      screenName: meta.screenName,
+      text: meta.text,
+      tweetCreatedAt: meta.tweetCreatedAt,
+    });
+  });
+  (meta.images || []).forEach((img, index) => {
+    const base = buildFilename(meta).replace(/\.mp4$/i, "");
+    const picName = `${base}_${String(index + 1).padStart(2, "0")}.jpg`;
+    tasks.push({
+      url: img.url,
+      filename: picName,
+      tweetId,
+      screenName: meta.screenName,
+      text: meta.text,
+      tweetCreatedAt: meta.tweetCreatedAt,
+    });
+  });
+  return tasks;
+}
+
+function insertGlobalDownloadButton() {
+  if (!isProfilePage()) return;
+  if (document.getElementById("vk-page-download-all")) return;
+  const btn = document.createElement("button");
+  btn.id = "vk-page-download-all";
+  btn.type = "button";
+  btn.title = "连续下载开关";
+  btn.innerHTML =
+    '<span style="display:inline-flex;align-items:center;justify-content:center;line-height:1"><svg viewBox="64 64 896 896" width="32" height="32" fill="currentColor" aria-hidden="true"><path d="M928 254.3c-30.6 13.2-63.9 22.7-98.2 26.4a170.1 170.1 0 0075-94 336.64 336.64 0 01-108.2 41.2A170.1 170.1 0 00672 174c-94.5 0-170.5 76.6-170.5 170.6 0 13.2 1.6 26.4 4.2 39.1-141.5-7.4-267.7-75-351.6-178.5a169.32 169.32 0 00-23.2 86.1c0 59.2 30.1 111.4 76 142.1a172 172 0 01-77.1-21.7v2.1c0 82.9 58.6 151.6 136.7 167.4a180.6 180.6 0 01-44.9 5.8c-11.1 0-21.6-1.1-32.2-2.6C211 652 273.9 701.1 348.8 702.7c-58.6 45.9-132 72.9-211.7 72.9-14.3 0-27.5-.5-41.2-2.1C171.5 822 261.2 850 357.8 850 671.4 850 843 590.2 843 364.7c0-7.4 0-14.8-.5-22.2 33.2-24.3 62.3-54.4 85.5-88.2z"></path></svg></span>';
+  Object.assign(btn.style, {
+    position: "fixed",
+    right: "16px",
+    bottom: "16px",
+    zIndex: 2147483647,
+    width: "55px",
+    height: "55px",
+    borderRadius: "50%",
+    border: "none",
+    background: "#000",
+    color: "#fff",
+    cursor: "pointer",
+    boxShadow: "0 2px 8px rgba(0,0,0,.25)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    lineHeight: "0",
+  });
+  btn.addEventListener("click", () => toggleIncremental(btn));
+  document.documentElement.appendChild(btn);
+  incremental.btn = btn;
+}
+
+function setToggleVisualState(active) {
+  if (!incremental.btn) return;
+  incremental.btn.style.background = active ? "#fff" : "#000";
+  incremental.btn.style.color = active ? "#000" : "#fff";
+  incremental.btn.title = active
+    ? "连续下载：已开启（点击关闭）"
+    : "连续下载：已关闭（点击开启）";
+}
+
+function startIncremental() {
+  if (incremental.enabled) return;
+  incremental.enabled = true;
+  incremental.startedAt = Date.now();
+  incremental.processedTweetIds.clear();
+  incremental.seenTaskKeys.clear();
+  incremental.pendingTasks = [];
+  // 先立即扫一遍已加载
+  collectVisibleIntoPending();
+  // 建立 IntersectionObserver，增量发现新 article
+  const io = new IntersectionObserver(
+    (entries) => {
+      if (!incremental.enabled) return;
+      for (const e of entries) {
+        if (e.isIntersecting) collectArticleIntoPending(e.target);
+      }
+    },
+    { root: null, threshold: 0.1 },
+  );
+  document
+    .querySelectorAll('article[role="article"]')
+    .forEach((a) => io.observe(a));
+  incremental.io = io;
+  // 批量节流下发
+  incremental.flushTimer = setInterval(
+    flushPendingBatch,
+    INCR_BATCH_INTERVAL_MS,
+  );
+  // 监听 DOM 新增，自动对新 article 注册观察
+  const domObserver = new MutationObserver((mutations) => {
+    if (!incremental.enabled) return;
+    mutations.forEach((m) => {
+      m.addedNodes &&
+        m.addedNodes.forEach((n) => {
+          if (!(n instanceof HTMLElement)) return;
+          if (n.matches && n.matches('article[role="article"]')) io.observe(n);
+          n.querySelectorAll &&
+            n
+              .querySelectorAll('article[role="article"]')
+              .forEach((a) => io.observe(a));
+        });
+    });
+  });
+  domObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  incremental.domObserver = domObserver;
+  // 超时/数量上限守卫
+  setTimeout(() => {
+    if (!incremental.enabled) return;
+    stopIncremental();
+  }, INCR_MAX_DURATION_MS);
+  setToggleVisualState(true);
+}
+
+function stopIncremental() {
+  incremental.enabled = false;
+  if (incremental.io) {
+    try {
+      incremental.io.disconnect();
+    } catch (_) {}
+    incremental.io = null;
+  }
+  if (incremental.domObserver) {
+    try {
+      incremental.domObserver.disconnect();
+    } catch (_) {}
+    incremental.domObserver = null;
+  }
+  if (incremental.flushTimer) {
+    clearInterval(incremental.flushTimer);
+    incremental.flushTimer = null;
+  }
+  incremental.pendingTasks = [];
+  setToggleVisualState(false);
+}
+
+function toggleIncremental(btn) {
+  incremental.btn = btn || incremental.btn;
+  if (incremental.enabled) stopIncremental();
+  else startIncremental();
+}
+
+function collectArticleIntoPending(article) {
+  const list = buildTasksFromArticle(article);
+  // 如果图像未被 GraphQL 元数据捕获，回退从 DOM 提取
+  if (!list.length) {
+    try {
+      const tweetId = currentTweetId(article);
+      const meta = readArticleMeta(article, tweetId);
+      const imgs = Array.from(
+        article.querySelectorAll(
+          '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media/"]',
+        ),
+      )
+        .map((img) => img.getAttribute("src") || "")
+        .filter((src) => /pbs.twimg.com\/media\//.test(src))
+        .map((src) => src.replace(/(?:\?|&)name=[^&]+/, "?name=orig"));
+      imgs.forEach((src, idx) => {
+        const base = buildFilename(meta).replace(/\.mp4$/i, "");
+        const picName = `${base}_${String(idx + 1).padStart(2, "0")}.jpg`;
+        list.push({
+          url: src,
+          filename: picName,
+          tweetId,
+          screenName: meta.screenName,
+          text: meta.text,
+          tweetCreatedAt: meta.tweetCreatedAt,
+        });
+      });
+    } catch (_) {}
+  }
+  list.forEach((t) => {
+    const key = `${t.url}::${t.filename}`;
+    if (!incremental.seenTaskKeys.has(key)) {
+      incremental.seenTaskKeys.add(key);
+      incremental.pendingTasks.push(t);
+    }
+  });
+}
+
+function collectVisibleIntoPending() {
+  document
+    .querySelectorAll('article[role="article"]')
+    .forEach(collectArticleIntoPending);
+}
+
+async function flushPendingBatch() {
+  if (!incremental.enabled) return;
+  if (!incremental.pendingTasks.length) return;
+  // 上限保护
+  const remain = Math.max(
+    0,
+    INCR_MAX_TASKS - incremental.processedTweetIds.size,
+  );
+  if (remain <= 0) {
+    stopIncremental();
+    return;
+  }
+  const batch = incremental.pendingTasks.splice(0, Math.min(50, remain));
+  // 去除已下载
+  const tweetIds = Array.from(
+    new Set(batch.map((t) => t.tweetId).filter(Boolean)),
+  );
+  let existing = [];
+  try {
+    const res = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "VK_CHECK_HISTORY_BATCH", payload: { tweetIds } },
+        (r) => resolve(r),
+      );
+    });
+    if (res?.ok) existing = res.payload?.existing || [];
+  } catch (_) {}
+  const existingSet = new Set(existing.map(String));
+  const finalTasks = batch.filter((t) => !existingSet.has(String(t.tweetId)));
+  if (!finalTasks.length) return;
+  await scheduleBatchDownload(finalTasks);
+  finalTasks.forEach((t) =>
+    incremental.processedTweetIds.add(String(t.tweetId)),
+  );
 }

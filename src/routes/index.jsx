@@ -13,7 +13,12 @@ import {
   Select,
   Tooltip,
 } from "antd";
-import { StarFilled, StarOutlined } from "@ant-design/icons";
+import {
+  StarFilled,
+  StarOutlined,
+  FolderOpenOutlined,
+  LinkOutlined,
+} from "@ant-design/icons";
 import dayjs from "dayjs";
 import { queryDownloads, listUsers } from "@/utils";
 import { getSettings, setSettings } from "@/utils/settings";
@@ -282,33 +287,37 @@ function RouteComponent() {
           }
           return (
             <Space>
-              <Button
-                size="small"
-                onClick={() => {
-                  if (!item.downloadId) return;
-                  try {
-                    chrome.runtime?.sendMessage(
-                      {
-                        type: "VK_SHOW_IN_FOLDER",
-                        payload: { downloadId: item.downloadId },
-                      },
-                      () => {},
-                    );
-                  } catch (_) {}
-                }}
-              >
-                {t("btn.openLocal")}
-              </Button>
-              <Button
-                size="small"
-                disabled={!postUrl}
-                onClick={() => {
-                  if (!postUrl) return;
-                  window.open(postUrl, "_blank", "noopener,noreferrer");
-                }}
-              >
-                {t("btn.openSource")}
-              </Button>
+              <Tooltip title={t("btn.openLocal")}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<FolderOpenOutlined />}
+                  onClick={() => {
+                    if (!item.downloadId) return;
+                    try {
+                      chrome.runtime?.sendMessage(
+                        {
+                          type: "VK_SHOW_IN_FOLDER",
+                          payload: { downloadId: item.downloadId },
+                        },
+                        () => {},
+                      );
+                    } catch (_) {}
+                  }}
+                />
+              </Tooltip>
+              <Tooltip title={t("btn.openSource")}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<LinkOutlined />}
+                  disabled={!postUrl}
+                  onClick={() => {
+                    if (!postUrl) return;
+                    window.open(postUrl, "_blank", "noopener,noreferrer");
+                  }}
+                />
+              </Tooltip>
             </Space>
           );
         },

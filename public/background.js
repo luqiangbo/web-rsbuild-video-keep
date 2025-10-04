@@ -162,6 +162,21 @@ const handlers = {
     return { isExist: !!record };
   },
 
+  async VK_CHECK_HISTORY_BATCH(payload) {
+    const ids = Array.isArray(payload?.tweetIds) ? payload.tweetIds : [];
+    const existing = new Set();
+    await withStore(STORE_HISTORY, "readonly", (store) => {
+      ids.forEach((id) => {
+        try {
+          store.get(id).onsuccess = (e) => {
+            if (e?.target?.result) existing.add(String(id));
+          };
+        } catch (_) {}
+      });
+    });
+    return { existing: Array.from(existing) };
+  },
+
   async VK_DOWNLOAD(payload) {
     const { url, filename, tweetId, screenName, text } = payload || {};
     if (!url) throw new Error("empty url");
