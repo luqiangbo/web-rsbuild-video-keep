@@ -774,14 +774,60 @@ function injectButton(article) {
         });
       } catch (_) {}
     }
+    // 如果没有图片任务但按钮提示有图片，尝试从 DOM 提取
+    const hasImageTasks = tasks.some((t) =>
+      /pbs\.twimg\.com\/media\//i.test(t.url),
+    );
+    if (!hasImageTasks && hasImages) {
+      try {
+        const imgs = Array.from(
+          article.querySelectorAll(
+            '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media/"]',
+          ),
+        )
+          .map((img) => img.getAttribute("src") || "")
+          .filter((src) => /pbs\.twimg\.com\/media\//.test(src))
+          .map((src) => src.replace(/(?:\?|&)name=[^&]+/, "?name=orig"));
+        imgs.forEach((src, idx) => {
+          const base = buildFilename(hydrate).replace(/\.mp4$/i, "");
+          const picName = `${base}_${String(idx + 1).padStart(2, "0")}.jpg`;
+          tasks.push({
+            url: src,
+            filename: picName,
+            tweetId,
+            screenName: hydrate.screenName,
+            text: hydrate.text,
+            tweetCreatedAt: hydrate.tweetCreatedAt,
+          });
+        });
+      } catch (_) {}
+    }
     if (!tasks.length) return;
     for (const task of tasks) {
       try {
-        const withExt = /\.\w{2,4}$/i.test(task.filename)
-          ? task.filename
-          : task.url.includes("twimg.com") && /\.mp4/i.test(task.url)
-            ? `${task.filename}.mp4`
-            : task.filename;
+        let withExt = task.filename;
+        // 确保文件名有正确的扩展名
+        if (!/\.\w{2,4}$/i.test(withExt)) {
+          const url = task.url || "";
+          if (/\.mp4(\?|$|#)/i.test(url) || url.includes("video.twimg.com")) {
+            withExt = `${withExt}.mp4`;
+          } else if (
+            /\.jpg(\?|$|#)/i.test(url) ||
+            /\.jpeg(\?|$|#)/i.test(url)
+          ) {
+            withExt = `${withExt}.jpg`;
+          } else if (/\.png(\?|$|#)/i.test(url)) {
+            withExt = `${withExt}.png`;
+          } else if (/\.gif(\?|$|#)/i.test(url)) {
+            withExt = `${withExt}.gif`;
+          } else if (/\.webp(\?|$|#)/i.test(url)) {
+            withExt = `${withExt}.webp`;
+          } else if (url.includes("pbs.twimg.com/media/")) {
+            withExt = `${withExt}.jpg`;
+          } else if (url.includes("twimg.com")) {
+            withExt = `${withExt}.mp4`;
+          }
+        }
         await scheduleDownload({ ...task, filename: withExt });
       } catch (_) {}
     }
