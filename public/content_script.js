@@ -257,7 +257,8 @@ function buildFilename(meta) {
   result = result.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
   if (!/\.\w{2,4}$/.test(result)) result = `${result || "video"}.mp4`;
   const folder = replacements.screenName || "user";
-  return `${folder}/${result}`;
+  const site = sanitize((location && location.host) || "site");
+  return `${site}/${folder}/${result}`;
 }
 
 function rewritePlaylist(url) {

@@ -166,12 +166,24 @@ const handlers = {
     const { url, filename, tweetId, screenName, text } = payload || {};
     if (!url) throw new Error("empty url");
     const resolvedFilename = filename || `video-${Date.now()}.mp4`;
-    const downloadId = await triggerDownload({
-      url,
-      filename: resolvedFilename,
-      saveAs: false,
-      conflictAction: "uniquify",
-    });
+    let downloadId;
+    try {
+      downloadId = await triggerDownload({
+        url,
+        filename: resolvedFilename,
+        saveAs: false,
+        conflictAction: "uniquify",
+      });
+    } catch (e) {
+      // 回退：移除子目录，仅保留文件名，避免某些系统路径不兼容
+      const fallback = resolvedFilename.split("/").pop();
+      downloadId = await triggerDownload({
+        url,
+        filename: fallback,
+        saveAs: false,
+        conflictAction: "uniquify",
+      });
+    }
     await persistRecord({
       url,
       filename: resolvedFilename,
@@ -188,12 +200,24 @@ const handlers = {
     const results = await Promise.all(
       items.map(async (item) => {
         try {
-          const downloadId = await triggerDownload({
-            url: item.url,
-            filename: item.filename || `video-${Date.now()}.mp4`,
-            saveAs: false,
-            conflictAction: "uniquify",
-          });
+          const desired = item.filename || `video-${Date.now()}.mp4`;
+          let downloadId;
+          try {
+            downloadId = await triggerDownload({
+              url: item.url,
+              filename: desired,
+              saveAs: false,
+              conflictAction: "uniquify",
+            });
+          } catch (e) {
+            const fallback = desired.split("/").pop();
+            downloadId = await triggerDownload({
+              url: item.url,
+              filename: fallback,
+              saveAs: false,
+              conflictAction: "uniquify",
+            });
+          }
           await persistRecord({ ...item, downloadId });
           return { ...item, downloadId, status: "queued" };
         } catch (error) {
@@ -202,6 +226,97 @@ const handlers = {
       }),
     );
     return { results };
+  },
+  async VK_SHOW_IN_FOLDER(payload) {
+    const id = payload?.downloadId;
+    if (typeof id !== "number") throw new Error("invalid downloadId");
+    try {
+      if (chrome?.downloads?.show) {
+        chrome.downloads.show(id);
+        return { ok: true };
+      }
+      throw new Error("downloads.show unavailable");
+    } catch (error) {
+      throw new Error(error?.message || "show in folder failed");
+    }
+  },
+  async VK_LIST_DOWNLOADS(payload) {
+    const page = Math.max(1, Number(payload?.page) || 1);
+    const pageSize = Math.min(
+      1000,
+      Math.max(1, Number(payload?.pageSize) || 10),
+    );
+    const text = String(payload?.text || "").toLowerCase();
+    const user = String(payload?.user || "").trim();
+    const users = Array.isArray(payload?.users)
+      ? payload.users.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+    const status = String(payload?.status || "").trim();
+
+    const all = [];
+    await withStore(STORE_RECORDS, "readonly", (store) => {
+      const idx = store.index("createdAt");
+      idx.openCursor(null, "prev").onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) return;
+        all.push(cursor.value);
+        cursor.continue();
+      };
+    });
+
+    let list = all;
+    if (users.length) {
+      const set = new Set(users.map(String));
+      list = list.filter(
+        (r) => set.has(String(r.screenName)) || set.has(String(r.userId)),
+      );
+    } else if (user) {
+      list = list.filter(
+        (r) => r.screenName === user || String(r.userId) === user,
+      );
+    }
+    if (status) {
+      list = list.filter((r) => r.status === status);
+    }
+    if (text) {
+      list = list.filter((r) =>
+        [r.filename, r.screenName, r.userId, r.text, r.tweetId]
+          .filter(Boolean)
+          .some((x) => String(x).toLowerCase().includes(text)),
+      );
+    }
+
+    const total = list.length;
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const items = list.slice(start, end);
+    return { items, total, page, pageSize };
+  },
+  async VK_LIST_USERS() {
+    const seen = new Set();
+    const users = [];
+    await withStore(STORE_RECORDS, "readonly", (store) => {
+      const idx = store.index("screenName");
+      idx.openCursor().onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) return;
+        const v = cursor.value || {};
+        const key = v.screenName || v.userId;
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          users.push({
+            screenName: v.screenName || String(key),
+            userId: v.userId || "",
+            username: v.username || "",
+          });
+        }
+        cursor.continue();
+      };
+    });
+    users.sort((a, b) =>
+      String(a.screenName || "").localeCompare(String(b.screenName || "")),
+    );
+    return { users };
   },
 };
 

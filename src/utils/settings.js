@@ -3,6 +3,7 @@ const LEGACY_DEFAULT_TEMPLATE = "{screenName}_{userId}_{tweetTime}_{random}";
 const DEFAULT_SETTINGS = Object.freeze({
   filenameTemplate: "{screenName}_{username}_{tweetTime}",
   lang: "zh-CN",
+  starredUsers: [],
 });
 
 function getChromeStorage() {

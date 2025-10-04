@@ -117,19 +117,58 @@ export async function bulkAddDownloadRecords(items) {
   return inserted;
 }
 
+// Deprecated: prefer queryDownloads from background (SSOT)
 export async function listDownloads(limit = 500) {
-  const results = [];
-  await withStore("readonly", (store) => {
-    const idx = store.index("by_createdAt");
-    idx.openCursor(null, "prev").onsuccess = (e) => {
-      const cursor = e.target.result;
-      if (cursor && results.length < limit) {
-        results.push(cursor.value);
-        cursor.continue();
-      }
-    };
+  const { items } = await queryDownloads({ page: 1, pageSize: limit });
+  return items;
+}
+
+export async function queryDownloads({
+  page = 1,
+  pageSize = 10,
+  text = "",
+  user = "",
+  users = [],
+  status = "",
+} = {}) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime?.sendMessage(
+        {
+          type: "VK_LIST_DOWNLOADS",
+          payload: { page, pageSize, text, user, users, status },
+        },
+        (res) => {
+          if (!res || !res.ok) {
+            resolve({ items: [], total: 0, page, pageSize });
+            return;
+          }
+          resolve({ ...res.payload });
+        },
+      );
+    } catch (_) {
+      resolve({ items: [], total: 0, page, pageSize });
+    }
   });
-  return results;
+}
+
+export async function listUsers() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime?.sendMessage(
+        { type: "VK_LIST_USERS", payload: {} },
+        (res) => {
+          if (!res || !res.ok) {
+            resolve([]);
+            return;
+          }
+          resolve(res.payload?.users || []);
+        },
+      );
+    } catch (_) {
+      resolve([]);
+    }
+  });
 }
 
 export async function markDownloadedByDownloadId(downloadId) {
