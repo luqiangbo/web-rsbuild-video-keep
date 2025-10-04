@@ -215,7 +215,32 @@ const handlers = {
     const results = await Promise.all(
       items.map(async (item) => {
         try {
-          const desired = item.filename || `video-${Date.now()}.mp4`;
+          let desired = item.filename || `video-${Date.now()}.mp4`;
+          // 确保文件名有正确的扩展名
+          if (!/\.\w{2,4}$/i.test(desired)) {
+            // 根据 URL 推断扩展名
+            const url = item.url || "";
+            if (/\.mp4(\?|$|#)/i.test(url) || url.includes("video.twimg.com")) {
+              desired = `${desired}.mp4`;
+            } else if (
+              /\.jpg(\?|$|#)/i.test(url) ||
+              /\.jpeg(\?|$|#)/i.test(url)
+            ) {
+              desired = `${desired}.jpg`;
+            } else if (/\.png(\?|$|#)/i.test(url)) {
+              desired = `${desired}.png`;
+            } else if (/\.gif(\?|$|#)/i.test(url)) {
+              desired = `${desired}.gif`;
+            } else if (/\.webp(\?|$|#)/i.test(url)) {
+              desired = `${desired}.webp`;
+            } else if (url.includes("pbs.twimg.com/media/")) {
+              // Twitter 图片默认是 jpg
+              desired = `${desired}.jpg`;
+            } else if (url.includes("twimg.com")) {
+              // 其他 twimg.com 资源默认视频
+              desired = `${desired}.mp4`;
+            }
+          }
           let downloadId;
           try {
             downloadId = await triggerDownload({
