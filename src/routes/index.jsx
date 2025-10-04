@@ -3,21 +3,20 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useSetState } from "ahooks";
 import {
   Button,
-  List,
-  Tag,
+  Table,
   Typography,
   Space,
   Input,
   Empty,
   Modal,
   Form,
-  Radio,
+  Select,
   Tooltip,
-  message,
 } from "antd";
-import dayjs from "dayjs";
+import { downloadList as MOCK_DOWNLOADS } from "@/utils/mock";
 import { listDownloads } from "@/utils";
 import { getSettings, setSettings } from "@/utils/settings";
+import { useTranslation } from "react-i18next";
 
 const FILENAME_PRESETS = [
   {
@@ -54,27 +53,32 @@ function renderTemplateExample(template, sample) {
 }
 
 const SAMPLE_DATA = {
-  screenName: "fancha1111",
-  username: "虎式坦克",
-  userId: "44196397",
+  screenName: "abc123",
+  username: "迪迦奥特曼",
+  userId: "123213123213",
   tweetTime: "2025-01-01T12:34",
   tweetId: "1234567890",
   random: "A1B2C3",
-  text: "星舰发射",
+  text: "哥尔巴，成为了光，得到了梦比优斯的认可，同时和希卡利一同将启示录·邪神格丽扎打入邪神宇宙。",
 };
+
+// 开关：是否使用本地假数据调试 UI
+const USE_MOCK = true;
+const MOCK_RECORDS = MOCK_DOWNLOADS;
 
 export const Route = createFileRoute("/")({
   component: RouteComponent,
 });
 
 function RouteComponent() {
+  const { t, i18n } = useTranslation();
   const [state, setState] = useSetState({
     loading: false,
     records: [],
     filterText: "",
     settingsModal: false,
     filenameTemplate: "",
-    savingSettings: false,
+    lang: "zh-CN",
   });
 
   useEffect(() => {
@@ -86,12 +90,20 @@ function RouteComponent() {
 
   const loadSettings = async () => {
     const settings = await getSettings();
-    setState({ filenameTemplate: settings.filenameTemplate });
+    setState({
+      filenameTemplate: settings.filenameTemplate,
+      lang: settings.lang || "zh-CN",
+    });
   };
 
   const refresh = async () => {
     setState({ loading: true });
     try {
+      if (USE_MOCK) {
+        await new Promise((r) => setTimeout(r, 200));
+        setState({ records: MOCK_RECORDS });
+        return;
+      }
       const list = await listDownloads(500);
       setState({ records: list });
     } finally {
@@ -103,17 +115,15 @@ function RouteComponent() {
     setState({ settingsModal: true });
   };
 
-  const handleSettingsOk = async () => {
-    setState({ savingSettings: true });
-    try {
-      await setSettings({ filenameTemplate: state.filenameTemplate });
-      message.success("已保存文件名模板");
-      setState({ settingsModal: false });
-    } catch (error) {
-      message.error("保存失败，请稍后再试");
-    } finally {
-      setState({ savingSettings: false });
-    }
+  const handleChangeLang = async (val) => {
+    setState({ lang: val });
+    i18n.changeLanguage(val);
+    await setSettings({ filenameTemplate: state.filenameTemplate, lang: val });
+  };
+
+  const handleChangeTemplateQuick = async (val) => {
+    setState({ filenameTemplate: val });
+    await setSettings({ filenameTemplate: val, lang: state.lang });
   };
 
   const filtered = useMemo(() => {
@@ -126,137 +136,157 @@ function RouteComponent() {
     );
   }, [state.records, state.filterText]);
 
+  const columns = useMemo(
+    () => [
+      {
+        title: "名称",
+        dataIndex: "filename",
+        key: "filename",
+        ellipsis: true,
+        width: 120,
+      },
+      {
+        title: "用户",
+        dataIndex: "user",
+        key: "user",
+        width: 120,
+      },
+      {
+        title: "推文ID",
+        dataIndex: "tweetId",
+        key: "tweetId",
+        width: 120,
+      },
+      {
+        title: "创建时间",
+        key: "createdAt",
+        width: 120,
+      },
+      {
+        title: "状态",
+        dataIndex: "status",
+        key: "status",
+        width: 90,
+      },
+    ],
+    [],
+  );
+
   return (
-    <div style={{ padding: 12, width: 360 }}>
+    <div
+      style={{
+        padding: 12,
+        width: "100%",
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       <Space style={{ marginBottom: 12 }}>
         <Typography.Title level={5} style={{ margin: 0 }}>
-          视频下载记录
+          {t("title.records")}
         </Typography.Title>
         <Button size="small" onClick={refresh} loading={state.loading}>
-          刷新
+          {t("btn.refresh")}
         </Button>
-        <Tooltip title="配置下载文件名格式">
+        <Tooltip title={t("tooltip.settings")}>
           <Button size="small" onClick={openSettings}>
-            设置
+            {t("btn.settings")}
           </Button>
         </Tooltip>
       </Space>
       <Input.Search
         allowClear
-        placeholder="搜索名称/用户/文案"
+        placeholder={t("placeholder.search")}
         size="small"
         onChange={(e) => setState({ filterText: e.target.value })}
         style={{ marginBottom: 8 }}
       />
-      <List
-        locale={{ emptyText: <Empty description="暂无下载记录" /> }}
-        size="small"
+      <Table
+        columns={columns.map((col) => {
+          if (col.key === "filename") return { ...col, title: t("table.name") };
+          if (col.key === "user") return { ...col, title: t("table.user") };
+          if (col.key === "tweetId")
+            return { ...col, title: t("table.tweetId") };
+          if (col.key === "createdAt")
+            return { ...col, title: t("table.createdAt") };
+          if (col.key === "status") return { ...col, title: t("table.status") };
+          return col;
+        })}
         dataSource={filtered}
-        bordered
-        renderItem={(item) => {
-          const statusColor =
-            item.status === "completed"
-              ? "green"
-              : item.status === "interrupted"
-                ? "red"
-                : "blue";
-          const createdAt = item.createdAt
-            ? dayjs(item.createdAt).format("YYYY-MM-DD HH:mm")
-            : "";
-          const completedAt = item.completedAt
-            ? dayjs(item.completedAt).format("HH:mm")
-            : null;
-          return (
-            <List.Item
-              actions={[
-                <div key="times" style={{ textAlign: "right" }}>
-                  <Typography.Text
-                    type="secondary"
-                    style={{ display: "block" }}
-                  >
-                    {createdAt}
-                  </Typography.Text>
-                  {completedAt ? (
-                    <Typography.Text type="secondary">
-                      完成 {completedAt}
-                    </Typography.Text>
-                  ) : null}
-                </div>,
-                <Tag color={statusColor} key="status">
-                  {item.status || "queued"}
-                </Tag>,
-              ]}
-            >
-              <List.Item.Meta
-                title={
-                  <Typography.Text ellipsis style={{ maxWidth: 200 }}>
-                    {item.filename || item.url}
-                  </Typography.Text>
-                }
-                description={
-                  <div>
-                    <Typography.Text
-                      style={{ display: "block" }}
-                      type="secondary"
-                    >
-                      {item.screenName || "未知用户"}
-                      {item.userId ? ` (${item.userId})` : ""} ·{" "}
-                      {item.tweetId || "-"}
-                    </Typography.Text>
-                    {item.text ? (
-                      <Typography.Paragraph
-                        type="secondary"
-                        style={{ marginBottom: 0 }}
-                        ellipsis={{ rows: 2 }}
-                      >
-                        {item.text}
-                      </Typography.Paragraph>
-                    ) : null}
-                  </div>
-                }
-              />
-            </List.Item>
-          );
+        rowKey={(r) => r.id}
+        size="small"
+        loading={state.loading}
+        locale={{ emptyText: <Empty description={t("empty.records")} /> }}
+        pagination={{
+          pageSize: 10,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
+          hideOnSinglePage: false,
+          position: ["bottomCenter"],
+          total: filtered.length,
+          showTotal: (total) => `Total ${total}`,
         }}
+        scroll={{ x: "max-content", y: "calc(100vh - 220px)" }}
       />
 
       <Modal
         open={state.settingsModal}
-        title="文件名模板设置"
+        title={t("modal.settings.title")}
         onCancel={() => setState({ settingsModal: false })}
-        onOk={handleSettingsOk}
-        okButtonProps={{ loading: state.savingSettings }}
+        footer={null}
         width={480}
       >
         <Form layout="vertical">
-          <Form.Item label="快速选择">
-            <Radio.Group
-              value={state.filenameTemplate}
-              onChange={(e) => setState({ filenameTemplate: e.target.value })}
-              style={{ display: "flex", flexDirection: "column", gap: 8 }}
-            >
-              {FILENAME_PRESETS.map((preset) => (
-                <Radio key={preset.value} value={preset.value}>
-                  {preset.label}
-                </Radio>
-              ))}
-            </Radio.Group>
+          <Form.Item label={t("form.lang")}>
+            <Select
+              size="small"
+              value={state.lang}
+              onChange={handleChangeLang}
+              options={[
+                { label: t("lang.zhCN"), value: "zh-CN" },
+                { label: t("lang.enUS"), value: "en-US" },
+                { label: t("lang.jaJP"), value: "ja-JP" },
+              ]}
+              style={{ width: "100%" }}
+            />
           </Form.Item>
-          <Form.Item label="自定义模板">
+          <Form.Item label={t("form.quickSelect")}>
+            <Select
+              size="small"
+              value={state.filenameTemplate}
+              onChange={handleChangeTemplateQuick}
+              options={FILENAME_PRESETS.map((p) => ({
+                label: p.label,
+                value: p.value,
+              }))}
+              style={{ width: "100%" }}
+              showSearch
+              optionFilterProp="label"
+            />
+          </Form.Item>
+          <Form.Item label={t("form.customTemplate")}>
             <Input.TextArea
               autoSize={{ minRows: 2, maxRows: 4 }}
               value={state.filenameTemplate}
-              onChange={(e) => setState({ filenameTemplate: e.target.value })}
+              onChange={async (e) => {
+                const val = e.target.value;
+                setState({ filenameTemplate: val });
+                await setSettings({ filenameTemplate: val, lang: state.lang });
+              }}
             />
             <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-              可用占位符： <code>{"{username}"}</code> 显示名、{" "}
-              <code>{"{screenName}"}</code> 用户名、{" "}
-              <code>{"{tweetTime}"}</code> 发布时间 (YYYY-MM-DDTHH:mm)、{" "}
-              <code>{"{tweetId}"}</code> 推文 ID、 <code>{"{random}"}</code>{" "}
-              随机串、 <code>{"{text}"}</code> 文案概要。
+              {t("form.placeholders.available")} <code>{"{username}"}</code>{" "}
+              {t("form.placeholders.displayName")}、{" "}
+              <code>{"{screenName}"}</code> {t("form.placeholders.username")}、{" "}
+              <code>{"{tweetTime}"}</code> {t("form.placeholders.publishedAt")}{" "}
+              (YYYY-MM-DDTHH:mm)、 <code>{"{tweetId}"}</code>{" "}
+              {t("form.placeholders.tweetId")}、 <code>{"{random}"}</code>{" "}
+              {t("form.placeholders.random")}、 <code>{"{text}"}</code>{" "}
+              {t("form.placeholders.text")}。
             </Typography.Paragraph>
             <Typography.Paragraph type="secondary">
-              示例：
+              {t("form.example")}
               <Typography.Text code copyable style={{ marginLeft: 4 }}>
                 {renderTemplateExample(state.filenameTemplate, SAMPLE_DATA)}
               </Typography.Text>

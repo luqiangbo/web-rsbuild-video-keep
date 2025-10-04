@@ -2,6 +2,7 @@ const SETTINGS_KEY = "video_keep_settings";
 const LEGACY_DEFAULT_TEMPLATE = "{screenName}_{userId}_{tweetTime}_{random}";
 const DEFAULT_SETTINGS = Object.freeze({
   filenameTemplate: "{screenName}_{username}_{tweetTime}",
+  lang: "zh-CN",
 });
 
 function getChromeStorage() {
