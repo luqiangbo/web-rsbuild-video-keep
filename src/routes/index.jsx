@@ -9,9 +9,10 @@ import {
   Input,
   Empty,
   Modal,
-  Form,
   Select,
   Tooltip,
+  message,
+  Card,
 } from "antd";
 import {
   StarFilled,
@@ -20,7 +21,12 @@ import {
   LinkOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { queryDownloads, listUsers } from "@/utils";
+import {
+  queryDownloads,
+  listUsers,
+  clearAllData,
+  clearUserData,
+} from "@/utils";
 import { getSettings, setSettings } from "@/utils/settings";
 import { useTranslation } from "react-i18next";
 
@@ -61,15 +67,21 @@ function RouteComponent() {
     lang: "zh-CN",
     starredUsers: [],
     allUsers: [],
+    clearUsers: [],
   });
 
   useEffect(() => {
     init();
   }, []);
   const init = async () => {
-    const [_, users] = await Promise.all([refresh(), listUsers()]);
-    setState({ allUsers: Array.isArray(users) ? users : [] });
+    await loadUsers();
     await loadSettings();
+    await refresh();
+  };
+
+  const loadUsers = async () => {
+    const users = await listUsers();
+    setState({ allUsers: Array.isArray(users) ? users : [] });
   };
 
   // 查询条件变化时自动刷新
@@ -111,8 +123,10 @@ function RouteComponent() {
     }
   };
 
-  const openSettings = () => {
+  const openSettings = async () => {
     setState({ settingsModal: true });
+    // 打开设置时刷新用户列表，确保获取最新数据
+    await loadUsers();
   };
 
   const handleChangeLang = async (val) => {
@@ -134,6 +148,31 @@ function RouteComponent() {
       : [...state.starredUsers, key];
     setState({ starredUsers: next });
     await setSettings({ starredUsers: next });
+  };
+
+  const handleClearAllData = async () => {
+    try {
+      await clearAllData();
+      message.success(t("message.clearSuccess"));
+      await Promise.all([refresh(), loadUsers()]);
+    } catch (error) {
+      message.error(t("message.clearFailed") + ": " + error.message);
+    }
+  };
+
+  const handleClearUserData = async () => {
+    if (!state.clearUsers.length) {
+      message.warning(t("message.selectUsers"));
+      return;
+    }
+    try {
+      await clearUserData(state.clearUsers);
+      message.success(t("message.clearSuccess"));
+      setState({ clearUsers: [] });
+      await Promise.all([refresh(), loadUsers()]);
+    } catch (error) {
+      message.error(t("message.clearFailed") + ": " + error.message);
+    }
   };
 
   const filtered = state.records;
@@ -262,12 +301,6 @@ function RouteComponent() {
               : ""}
           </Typography.Text>
         ),
-      },
-      {
-        title: "状态",
-        dataIndex: "status",
-        key: "status",
-        width: 90,
       },
       {
         title: "",
@@ -416,7 +449,6 @@ function RouteComponent() {
             return { ...col, title: t("table.tweetId") };
           if (col.key === "createdAt")
             return { ...col, title: t("table.createdAt") };
-          if (col.key === "status") return { ...col, title: t("table.status") };
           return col;
         })}
         dataSource={filtered}
@@ -443,10 +475,15 @@ function RouteComponent() {
         title={t("modal.settings.title")}
         onCancel={() => setState({ settingsModal: false })}
         footer={null}
-        width={480}
+        width={520}
       >
-        <Form layout="vertical">
-          <Form.Item label={t("form.lang")}>
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          {/* 功能1: 界面语言 */}
+          <Card
+            size="small"
+            title={t("form.lang")}
+            styles={{ body: { padding: "12px" } }}
+          >
             <Select
               size="small"
               value={state.lang}
@@ -458,49 +495,102 @@ function RouteComponent() {
               ]}
               style={{ width: "100%" }}
             />
-          </Form.Item>
-          <Form.Item label={t("form.quickSelect")}>
-            <Select
-              size="small"
-              value={state.filenameTemplate}
-              onChange={handleChangeTemplateQuick}
-              options={FILENAME_PRESETS.map((p) => ({
-                label: p.label,
-                value: p.value,
-              }))}
-              style={{ width: "100%" }}
-              showSearch
-              optionFilterProp="label"
-            />
-          </Form.Item>
-          <Form.Item label={t("form.customTemplate")}>
-            <Input.TextArea
-              autoSize={{ minRows: 2, maxRows: 4 }}
-              value={state.filenameTemplate}
-              onChange={async (e) => {
-                const val = e.target.value;
-                setState({ filenameTemplate: val });
-                await setSettings({ filenameTemplate: val, lang: state.lang });
-              }}
-            />
-            <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-              {t("form.placeholders.available")} <code>{"{username}"}</code>{" "}
-              {t("form.placeholders.displayName")}、{" "}
-              <code>{"{screenName}"}</code> {t("form.placeholders.username")}、{" "}
-              <code>{"{tweetTime}"}</code> {t("form.placeholders.publishedAt")}{" "}
-              (YYYY-MM-DDTHH:mm)、 <code>{"{tweetId}"}</code>{" "}
-              {t("form.placeholders.tweetId")}、 <code>{"{random}"}</code>{" "}
-              {t("form.placeholders.random")}、 <code>{"{text}"}</code>{" "}
-              {t("form.placeholders.text")}。
-            </Typography.Paragraph>
-            <Typography.Paragraph type="secondary">
-              {t("form.example")}
-              <Typography.Text code copyable style={{ marginLeft: 4 }}>
-                {renderTemplateExample(state.filenameTemplate, SAMPLE_DATA)}
-              </Typography.Text>
-            </Typography.Paragraph>
-          </Form.Item>
-        </Form>
+          </Card>
+
+          {/* 功能2: 文件名模板 */}
+          <Card
+            size="small"
+            title={t("form.customTemplate")}
+            styles={{ body: { padding: "12px" } }}
+          >
+            <Space direction="vertical" style={{ width: "100%" }} size={8}>
+              <Select
+                size="small"
+                placeholder={t("form.quickSelect")}
+                value={state.filenameTemplate}
+                onChange={handleChangeTemplateQuick}
+                options={FILENAME_PRESETS.map((p) => ({
+                  label: p.label,
+                  value: p.value,
+                }))}
+                style={{ width: "100%" }}
+                showSearch
+                optionFilterProp="label"
+              />
+              <Input.TextArea
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                value={state.filenameTemplate}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  setState({ filenameTemplate: val });
+                  await setSettings({
+                    filenameTemplate: val,
+                    lang: state.lang,
+                  });
+                }}
+              />
+              <Typography.Paragraph
+                type="secondary"
+                style={{ marginBottom: 4, fontSize: 12 }}
+              >
+                {t("form.placeholders.available")} <code>{"{username}"}</code>{" "}
+                {t("form.placeholders.displayName")}、{" "}
+                <code>{"{screenName}"}</code> {t("form.placeholders.username")}
+                、 <code>{"{tweetTime}"}</code>{" "}
+                {t("form.placeholders.publishedAt")} (YYYY-MM-DDTHH:mm)、{" "}
+                <code>{"{tweetId}"}</code> {t("form.placeholders.tweetId")}、{" "}
+                <code>{"{random}"}</code> {t("form.placeholders.random")}、{" "}
+                <code>{"{text}"}</code> {t("form.placeholders.text")}。
+              </Typography.Paragraph>
+              <Typography.Paragraph
+                type="secondary"
+                style={{ marginBottom: 0, fontSize: 12 }}
+              >
+                {t("form.example")}
+                <Typography.Text code copyable style={{ marginLeft: 4 }}>
+                  {renderTemplateExample(state.filenameTemplate, SAMPLE_DATA)}
+                </Typography.Text>
+              </Typography.Paragraph>
+            </Space>
+          </Card>
+
+          {/* 功能3: 数据管理 */}
+          <Card
+            size="small"
+            title={t("form.clearData")}
+            styles={{ body: { padding: "12px" } }}
+          >
+            <Space direction="vertical" style={{ width: "100%" }} size={8}>
+              <Button danger block size="small" onClick={handleClearAllData}>
+                {t("btn.clearAll")}
+              </Button>
+              <Select
+                mode="multiple"
+                size="small"
+                placeholder={t("form.selectUsers")}
+                value={state.clearUsers}
+                onChange={(val) => setState({ clearUsers: val })}
+                options={userOptions.map((u) => ({
+                  label: u.labelString,
+                  value: u.value,
+                }))}
+                style={{ width: "100%" }}
+                showSearch
+                optionFilterProp="label"
+                maxTagCount="responsive"
+              />
+              <Button
+                danger
+                block
+                size="small"
+                onClick={handleClearUserData}
+                disabled={!state.clearUsers.length}
+              >
+                {t("btn.clearUser")}
+              </Button>
+            </Space>
+          </Card>
+        </Space>
       </Modal>
     </div>
   );

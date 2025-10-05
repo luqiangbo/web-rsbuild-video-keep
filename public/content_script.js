@@ -787,7 +787,7 @@ function injectButton(article) {
         )
           .map((img) => img.getAttribute("src") || "")
           .filter((src) => /pbs\.twimg\.com\/media\//.test(src))
-          .map((src) => src.replace(/(?:\?|&)name=[^&]+/, "?name=orig"));
+          .map((src) => src.replace(/([?&])name=[^&]+/, "$1name=orig"));
         imgs.forEach((src, idx) => {
           const base = buildFilename(hydrate).replace(/\.mp4$/i, "");
           const picName = `${base}_${String(idx + 1).padStart(2, "0")}.jpg`;
@@ -967,7 +967,7 @@ function insertGlobalDownloadButton() {
   Object.assign(btn.style, {
     position: "fixed",
     right: "16px",
-    bottom: "16px",
+    bottom: "200px",
     zIndex: 2147483647,
     width: "55px",
     height: "55px",
@@ -1094,7 +1094,7 @@ function collectArticleIntoPending(article) {
       )
         .map((img) => img.getAttribute("src") || "")
         .filter((src) => /pbs.twimg.com\/media\//.test(src))
-        .map((src) => src.replace(/(?:\?|&)name=[^&]+/, "?name=orig"));
+        .map((src) => src.replace(/([\?&])name=[^&]+/, "$1name=orig"));
       imgs.forEach((src, idx) => {
         const base = buildFilename(meta).replace(/\.mp4$/i, "");
         const picName = `${base}_${String(idx + 1).padStart(2, "0")}.jpg`;

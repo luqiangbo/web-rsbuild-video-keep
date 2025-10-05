@@ -16,8 +16,7 @@
   "table.source": "ソースURL",
   "table.tweetId": "ツイートID",
   "table.createdAt": "作成日時",
-  "table.status": "状態",
-  "modal.settings.title": "ファイル名テンプレート",
+  "modal.settings.title": "設定",
   "form.lang": "表示言語",
   "lang.zhCN": "中国語（簡体字）",
   "lang.enUS": "英語",
@@ -43,5 +42,16 @@
   "sample.tweetTime": "2025-01-01T12:34",
   "sample.tweetId": "1234567890",
   "sample.random": "A1B2C3",
-  "sample.text": "プレビュー用のサンプル本文です"
+  "sample.text": "プレビュー用のサンプル本文です",
+  "form.clearData": "データ管理",
+  "btn.clearAll": "すべてのデータをクリア",
+  "btn.clearUser": "ユーザーデータをクリア",
+  "form.selectUsers": "クリアするユーザーを選択",
+  "confirm.clearAll.title": "すべてのデータをクリアしますか？",
+  "confirm.clearAll.content": "すべてのダウンロード履歴が完全に削除されます。続行しますか？",
+  "confirm.clearUser.title": "ユーザーデータをクリアしますか？",
+  "confirm.clearUser.content": "選択したユーザーのすべてのダウンロード履歴が完全に削除されます。続行しますか？",
+  "message.clearSuccess": "データがクリアされました",
+  "message.clearFailed": "クリアに失敗しました",
+  "message.selectUsers": "クリアするユーザーを選択してください"
 }

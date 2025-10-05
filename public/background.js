@@ -94,13 +94,8 @@ const db = {
   },
 };
 
-async function updateRecordStatus(downloadId, patch) {
-  const record = await db.getByIndex(STORE_RECORDS, "downloadId", downloadId);
-  if (!record) return;
-  await db.put(STORE_RECORDS, { ...record, ...patch });
-}
-
-async function persistRecord({
+// 只在下载成功时添加记录
+async function addSuccessRecord({
   url,
   filename,
   tweetId,
@@ -116,10 +111,7 @@ async function persistRecord({
     tweetId: tweetId || null,
     screenName: screenName || null,
     text: text || null,
-    status: downloadId ? "queued" : "interrupted",
     createdAt: now,
-    updatedAt: now,
-    completedAt: null,
   };
 
   await db.put(STORE_RECORDS, record).catch(() => {});
@@ -140,6 +132,9 @@ async function persistRecord({
   return record;
 }
 
+// 用于存储待处理的下载信息（下载成功后才会持久化）
+const pendingDownloads = new Map();
+
 function triggerDownload(options) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download(options, (downloadId) => {
@@ -152,6 +147,40 @@ function triggerDownload(options) {
       }
     });
   });
+}
+
+// 根据 URL 推断文件扩展名（确保下载的文件有正确的扩展名）
+function ensureFileExtension(filename, url) {
+  if (!filename || !url) return filename || "download";
+
+  // 如果已经有扩展名，直接返回
+  if (/\.\w{2,4}$/i.test(filename)) {
+    return filename;
+  }
+
+  // 根据 URL 特征推断扩展名
+  const urlStr = String(url);
+  let ext = "";
+
+  if (/\.mp4(\?|$|#)/i.test(urlStr) || urlStr.includes("video.twimg.com")) {
+    ext = ".mp4";
+  } else if (/\.jpg(\?|$|#)/i.test(urlStr) || /\.jpeg(\?|$|#)/i.test(urlStr)) {
+    ext = ".jpg";
+  } else if (/\.png(\?|$|#)/i.test(urlStr)) {
+    ext = ".png";
+  } else if (/\.gif(\?|$|#)/i.test(urlStr)) {
+    ext = ".gif";
+  } else if (/\.webp(\?|$|#)/i.test(urlStr)) {
+    ext = ".webp";
+  } else if (urlStr.includes("pbs.twimg.com/media/")) {
+    // Twitter 图片默认 jpg
+    ext = ".jpg";
+  } else if (urlStr.includes("twimg.com")) {
+    // 其他 twimg 资源默认视频
+    ext = ".mp4";
+  }
+
+  return ext ? `${filename}${ext}` : filename;
 }
 
 const handlers = {
@@ -180,7 +209,11 @@ const handlers = {
   async VK_DOWNLOAD(payload) {
     const { url, filename, tweetId, screenName, text } = payload || {};
     if (!url) throw new Error("empty url");
-    const resolvedFilename = filename || `video-${Date.now()}.mp4`;
+
+    // 确保文件名有正确的扩展名
+    const baseFilename = filename || `video-${Date.now()}.mp4`;
+    const resolvedFilename = ensureFileExtension(baseFilename, url);
+
     let downloadId;
     try {
       downloadId = await triggerDownload({
@@ -199,7 +232,9 @@ const handlers = {
         conflictAction: "uniquify",
       });
     }
-    await persistRecord({
+
+    // 存储待处理信息，等待下载完成
+    pendingDownloads.set(downloadId, {
       url,
       filename: resolvedFilename,
       tweetId,
@@ -207,6 +242,7 @@ const handlers = {
       text,
       downloadId,
     });
+
     return { downloadId };
   },
 
@@ -215,32 +251,10 @@ const handlers = {
     const results = await Promise.all(
       items.map(async (item) => {
         try {
-          let desired = item.filename || `video-${Date.now()}.mp4`;
           // 确保文件名有正确的扩展名
-          if (!/\.\w{2,4}$/i.test(desired)) {
-            // 根据 URL 推断扩展名
-            const url = item.url || "";
-            if (/\.mp4(\?|$|#)/i.test(url) || url.includes("video.twimg.com")) {
-              desired = `${desired}.mp4`;
-            } else if (
-              /\.jpg(\?|$|#)/i.test(url) ||
-              /\.jpeg(\?|$|#)/i.test(url)
-            ) {
-              desired = `${desired}.jpg`;
-            } else if (/\.png(\?|$|#)/i.test(url)) {
-              desired = `${desired}.png`;
-            } else if (/\.gif(\?|$|#)/i.test(url)) {
-              desired = `${desired}.gif`;
-            } else if (/\.webp(\?|$|#)/i.test(url)) {
-              desired = `${desired}.webp`;
-            } else if (url.includes("pbs.twimg.com/media/")) {
-              // Twitter 图片默认是 jpg
-              desired = `${desired}.jpg`;
-            } else if (url.includes("twimg.com")) {
-              // 其他 twimg.com 资源默认视频
-              desired = `${desired}.mp4`;
-            }
-          }
+          const baseFilename = item.filename || `video-${Date.now()}.mp4`;
+          const desired = ensureFileExtension(baseFilename, item.url);
+
           let downloadId;
           try {
             downloadId = await triggerDownload({
@@ -258,10 +272,20 @@ const handlers = {
               conflictAction: "uniquify",
             });
           }
-          await persistRecord({ ...item, downloadId });
-          return { ...item, downloadId, status: "queued" };
+
+          // 存储待处理信息，等待下载完成
+          pendingDownloads.set(downloadId, {
+            url: item.url,
+            filename: desired,
+            tweetId: item.tweetId,
+            screenName: item.screenName,
+            text: item.text,
+            downloadId,
+          });
+
+          return { ...item, downloadId };
         } catch (error) {
-          return { ...item, status: "interrupted", error: error.message };
+          return { ...item, error: error.message };
         }
       }),
     );
@@ -358,6 +382,58 @@ const handlers = {
     );
     return { users };
   },
+
+  async VK_CLEAR_ALL_DATA() {
+    // 清空所有下载记录
+    await withStore(STORE_RECORDS, "readwrite", (store) => {
+      store.clear();
+    });
+    // 清空下载历史
+    await withStore(STORE_HISTORY, "readwrite", (store) => {
+      store.clear();
+    });
+    return { cleared: true, count: "all" };
+  },
+
+  async VK_CLEAR_USER_DATA(payload) {
+    const { users = [] } = payload || {};
+    if (!users.length) throw new Error("No users specified");
+
+    const userSet = new Set(users.map((u) => String(u).trim()).filter(Boolean));
+    let deletedCount = 0;
+
+    // 清空指定用户的下载记录
+    await withStore(STORE_RECORDS, "readwrite", (store) => {
+      store.openCursor().onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) return;
+        const v = cursor.value || {};
+        const matchUser =
+          userSet.has(String(v.screenName)) || userSet.has(String(v.userId));
+        if (matchUser) {
+          cursor.delete();
+          deletedCount++;
+        }
+        cursor.continue();
+      };
+    });
+
+    // 清空指定用户的下载历史
+    await withStore(STORE_HISTORY, "readwrite", (store) => {
+      store.openCursor().onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) return;
+        const v = cursor.value || {};
+        const matchUser = userSet.has(String(v.screenName));
+        if (matchUser) {
+          cursor.delete();
+        }
+        cursor.continue();
+      };
+    });
+
+    return { cleared: true, count: deletedCount, users: Array.from(userSet) };
+  },
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -373,13 +449,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.downloads.onChanged.addListener((delta) => {
   const status = delta.state?.current;
-  if (!status || (status !== "complete" && status !== "interrupted")) return;
-  chrome.runtime.sendMessage({ type: "VK_DOWNLOAD_STATE", payload: delta });
-  if (typeof delta.id === "number") {
-    updateRecordStatus(delta.id, {
-      status,
-      completedAt: Date.now(),
-      updatedAt: Date.now(),
-    }).catch(() => {});
+  if (status !== "complete") return;
+
+  const downloadId = delta.id;
+  if (typeof downloadId === "number" && pendingDownloads.has(downloadId)) {
+    const info = pendingDownloads.get(downloadId);
+    // 只在下载成功时添加记录
+    addSuccessRecord(info).catch(() => {});
+    pendingDownloads.delete(downloadId);
   }
+
+  chrome.runtime.sendMessage({ type: "VK_DOWNLOAD_STATE", payload: delta });
 });

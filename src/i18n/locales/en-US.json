@@ -16,8 +16,7 @@
   "table.source": "Source",
   "table.tweetId": "Tweet ID",
   "table.createdAt": "Created At",
-  "table.status": "Status",
-  "modal.settings.title": "File Name Template",
+  "modal.settings.title": "Settings",
   "form.lang": "Language",
   "lang.zhCN": "Chinese (Simplified)",
   "lang.enUS": "English",
@@ -43,5 +42,16 @@
   "sample.tweetTime": "2025-01-01T12:34",
   "sample.tweetId": "1234567890",
   "sample.random": "A1B2C3",
-  "sample.text": "This is a sample text for preview"
+  "sample.text": "This is a sample text for preview",
+  "form.clearData": "Data Management",
+  "btn.clearAll": "Clear All Data",
+  "btn.clearUser": "Clear User Data",
+  "form.selectUsers": "Select users to clear",
+  "confirm.clearAll.title": "Confirm Clear All Data",
+  "confirm.clearAll.content": "This will delete all download records and history permanently. Are you sure?",
+  "confirm.clearUser.title": "Confirm Clear User Data",
+  "confirm.clearUser.content": "This will delete all download records for selected users permanently. Are you sure?",
+  "message.clearSuccess": "Data cleared successfully",
+  "message.clearFailed": "Failed to clear data",
+  "message.selectUsers": "Please select users to clear"
 }

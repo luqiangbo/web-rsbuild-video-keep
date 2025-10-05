@@ -16,8 +16,7 @@
   "table.source": "源地址",
   "table.tweetId": "推文ID",
   "table.createdAt": "创建时间",
-  "table.status": "状态",
-  "modal.settings.title": "文件名模板设置",
+  "modal.settings.title": "设置",
   "form.lang": "界面语言",
   "lang.zhCN": "中文 (简体)",
   "lang.enUS": "English",
@@ -43,5 +42,16 @@
   "sample.tweetTime": "2025-01-01T12:34",
   "sample.tweetId": "1234567890",
   "sample.random": "A1B2C3",
-  "sample.text": "这是一个用于预览的示例文案"
+  "sample.text": "这是一个用于预览的示例文案",
+  "form.clearData": "数据管理",
+  "btn.clearAll": "清空所有数据",
+  "btn.clearUser": "清空指定用户数据",
+  "form.selectUsers": "选择要清除的用户",
+  "confirm.clearAll.title": "确认清空所有数据",
+  "confirm.clearAll.content": "此操作将删除所有下载记录和历史，无法恢复。确定继续吗？",
+  "confirm.clearUser.title": "确认清空用户数据",
+  "confirm.clearUser.content": "此操作将删除选中用户的所有下载记录，无法恢复。确定继续吗？",
+  "message.clearSuccess": "数据已清空",
+  "message.clearFailed": "清空失败",
+  "message.selectUsers": "请先选择要清除的用户"
 }

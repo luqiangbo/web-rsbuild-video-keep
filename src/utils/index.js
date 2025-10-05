@@ -200,3 +200,43 @@ export async function hasDownloaded(url) {
   });
   return exist;
 }
+
+// 清空所有数据
+export async function clearAllData() {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime?.sendMessage(
+        { type: "VK_CLEAR_ALL_DATA", payload: {} },
+        (res) => {
+          if (!res || !res.ok) {
+            reject(new Error(res?.error || "Clear data failed"));
+            return;
+          }
+          resolve(res.payload);
+        },
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// 清空指定用户的数据
+export async function clearUserData(users) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime?.sendMessage(
+        { type: "VK_CLEAR_USER_DATA", payload: { users } },
+        (res) => {
+          if (!res || !res.ok) {
+            reject(new Error(res?.error || "Clear user data failed"));
+            return;
+          }
+          resolve(res.payload);
+        },
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
