@@ -10,6 +10,7 @@
   "filter.userPlaceholder": "ユーザーで絞り込み",
   "filter.pinUserTooltip": "★付きのユーザーはリスト先頭に表示されます",
   "empty.records": "履歴がありません",
+  "table.preview": "プレビュー",
   "table.name": "名称",
   "table.user": "ユーザー",
   "table.text": "本文",

@@ -13,6 +13,7 @@ import {
   Tooltip,
   message,
   Card,
+  Image,
 } from "antd";
 import {
   StarFilled,
@@ -21,6 +22,8 @@ import {
   LinkOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
+import Plyr from "plyr-react";
+import "plyr-react/plyr.css";
 import {
   queryDownloads,
   listUsers,
@@ -68,6 +71,8 @@ function RouteComponent() {
     starredUsers: [],
     allUsers: [],
     clearUsers: [],
+    videoPlayerModal: false,
+    videoPlayerUrl: "",
   });
 
   useEffect(() => {
@@ -241,6 +246,118 @@ function RouteComponent() {
 
   const columns = useMemo(
     () => [
+      {
+        title: "预览",
+        key: "preview",
+        width: 80,
+        render: (_, item) => {
+          const url = item.url || "";
+          // 判断是图片还是视频
+          const isImage =
+            /\.(jpg|jpeg|png|gif|webp)(\?|$|#)/i.test(url) ||
+            /pbs\.twimg\.com\/media\//i.test(url);
+          const isVideo =
+            /\.(mp4|mov|avi)(\?|$|#)/i.test(url) ||
+            /video\.twimg\.com/i.test(url);
+
+          if (isImage) {
+            // 图片预览 - 使用 Image 组件支持点击放大
+            let previewUrl = url;
+            // 如果是 Twitter 图片，转换为小尺寸以加快加载
+            if (/pbs\.twimg\.com\/media\//i.test(url)) {
+              previewUrl = url.replace(/([?&])name=[^&]+/, "$1name=small");
+              if (!/[?&]name=/i.test(previewUrl)) {
+                previewUrl +=
+                  (previewUrl.includes("?") ? "&" : "?") + "name=small";
+              }
+            }
+            return (
+              <Image
+                src={previewUrl}
+                alt="preview"
+                width={60}
+                height={60}
+                style={{
+                  objectFit: "cover",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+                preview={{
+                  src: url.replace(/([?&])name=[^&]+/, "$1name=orig"),
+                }}
+                fallback="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23f0f0f0'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%23999' font-size='12'%3E图片%3C/text%3E%3C/svg%3E"
+              />
+            );
+          } else if (isVideo) {
+            // 视频预览 - 点击打开播放器
+            return (
+              <div
+                style={{
+                  width: 60,
+                  height: 60,
+                  background: "#000",
+                  borderRadius: 4,
+                  overflow: "hidden",
+                  position: "relative",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setState({ videoPlayerModal: true, videoPlayerUrl: url });
+                }}
+              >
+                <video
+                  src={url}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                  preload="metadata"
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "50%",
+                    left: "50%",
+                    transform: "translate(-50%, -50%)",
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    background: "rgba(255,255,255,0.9)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="#000">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              </div>
+            );
+          }
+
+          // 未知类型显示占位符
+          return (
+            <div
+              style={{
+                width: 60,
+                height: 60,
+                background: "#f5f5f5",
+                borderRadius: 4,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 12,
+                color: "#999",
+              }}
+            >
+              N/A
+            </div>
+          );
+        },
+      },
       {
         title: "名称",
         dataIndex: "filename",
@@ -441,6 +558,8 @@ function RouteComponent() {
       </Space>
       <Table
         columns={columns.map((col) => {
+          if (col.key === "preview")
+            return { ...col, title: t("table.preview") };
           if (col.key === "filename") return { ...col, title: t("table.name") };
           if (col.key === "user") return { ...col, title: t("table.user") };
           if (col.key === "text") return { ...col, title: t("table.text") };
@@ -591,6 +710,132 @@ function RouteComponent() {
             </Space>
           </Card>
         </Space>
+      </Modal>
+
+      {/* 视频播放器 Modal - 适配侧边栏，竖屏视频 */}
+      <Modal
+        open={state.videoPlayerModal}
+        onCancel={() =>
+          setState({ videoPlayerModal: false, videoPlayerUrl: "" })
+        }
+        footer={null}
+        closable={false}
+        maskClosable={true}
+        keyboard={true}
+        width="90%"
+        style={{ maxWidth: 500 }}
+        centered
+        destroyOnClose
+        styles={{
+          body: { padding: 0 },
+          content: { padding: 0, background: "#000" },
+        }}
+      >
+        {state.videoPlayerUrl && (
+          <div style={{ position: "relative" }}>
+            <Plyr
+              source={{
+                type: "video",
+                sources: [
+                  {
+                    src: state.videoPlayerUrl,
+                    type: "video/mp4",
+                  },
+                ],
+              }}
+              options={{
+                controls: [
+                  "play-large",
+                  "play",
+                  "progress",
+                  "current-time",
+                  "mute",
+                  "volume",
+                  "settings",
+                ],
+                autoplay: true,
+                seekTime: 10,
+                displayDuration: true,
+                invertTime: false,
+                toggleInvert: true,
+                ratio: "9:16",
+                storage: { enabled: false },
+                speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
+                i18n: {
+                  restart: "重新播放",
+                  rewind: "快退 {seektime}s",
+                  play: "播放",
+                  pause: "暂停",
+                  fastForward: "快进 {seektime}s",
+                  seek: "定位",
+                  seekLabel: "{currentTime} / {duration}",
+                  played: "已播放",
+                  buffered: "已缓冲",
+                  currentTime: "当前时间",
+                  duration: "总时长",
+                  volume: "音量",
+                  mute: "静音",
+                  unmute: "取消静音",
+                  enableCaptions: "开启字幕",
+                  disableCaptions: "关闭字幕",
+                  download: "下载",
+                  enterFullscreen: "进入全屏",
+                  exitFullscreen: "退出全屏",
+                  frameTitle: "播放器：{title}",
+                  captions: "字幕",
+                  settings: "设置",
+                  pip: "画中画",
+                  menuBack: "返回上级菜单",
+                  speed: "速度",
+                  normal: "正常",
+                  quality: "画质",
+                  loop: "循环播放",
+                  start: "开始",
+                  end: "结束",
+                  all: "全部",
+                  reset: "重置",
+                  disabled: "禁用",
+                  enabled: "启用",
+                  advertisement: "广告",
+                  qualityBadge: {
+                    2160: "4K",
+                    1440: "HD",
+                    1080: "HD",
+                    720: "HD",
+                    576: "SD",
+                    480: "SD",
+                  },
+                },
+              }}
+            />
+            {/* 在新标签页打开按钮 */}
+            <button
+              onClick={() => window.open(state.videoPlayerUrl, "_blank")}
+              style={{
+                position: "absolute",
+                bottom: 60,
+                right: 12,
+                zIndex: 1000,
+                padding: "6px 12px",
+                borderRadius: 4,
+                border: "none",
+                background: "rgba(0, 0, 0, 0.7)",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                transition: "background 0.2s",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = "rgba(0, 0, 0, 0.9)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.background = "rgba(0, 0, 0, 0.7)")
+              }
+            >
+              在新标签页打开
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -653,6 +653,140 @@ function scheduleBatchDownload(items) {
   });
 }
 
+// ===================== 弹窗下载按钮注入 =====================
+function injectModalButton() {
+  // 查找所有可能的弹窗中的 action bar（不在 article 内的）
+  const allActionBars = document.querySelectorAll(
+    '[role="group"][aria-label*="喜欢"], [role="group"][aria-label*="回复"], [role="group"][aria-label*="likes"], [role="group"][aria-label*="repl"]',
+  );
+
+  allActionBars.forEach((actionBar) => {
+    // 检查是否已经注入过
+    if (actionBar.dataset.vkModalBtnInjected === "1") return;
+
+    // 检查是否在 article 内（如果在 article 内，由 injectButton 处理）
+    const isInArticle = actionBar.closest('article[role="article"]');
+    if (isInArticle) return;
+
+    // 检查是否在弹窗中（必须有 swipe-to-dismiss 或 videoPlayer 祖先元素）
+    const isInModal =
+      actionBar.closest('[data-testid="swipe-to-dismiss"]') ||
+      actionBar.closest('[data-testid="videoPlayer"]');
+    if (!isInModal) return;
+
+    // 提取弹窗中的媒体信息
+    let mediaUrl = null;
+    let mediaType = null;
+    let tweetId = null;
+    let screenName = null;
+
+    // 尝试从 URL 获取推文信息
+    const urlMatch = window.location.href.match(/\/([^/]+)\/status\/(\d+)/);
+    if (urlMatch) {
+      screenName = urlMatch[1];
+      tweetId = urlMatch[2];
+    }
+
+    // 查找弹窗容器
+    const modalContainer = isInModal;
+
+    // 检测视频
+    const videoEl = modalContainer.querySelector(
+      "video[poster], video source[src]",
+    );
+    if (videoEl) {
+      const poster = videoEl.getAttribute("poster");
+      if (poster) {
+        // 从 poster URL 提取 track ID
+        const m = String(poster).match(/amplify_video_thumb\/(\d+)\//);
+        if (m && m[1]) {
+          const trackId = m[1];
+          mediaUrl = selectVideoUrl(trackId);
+          if (mediaUrl) {
+            mediaType = "video";
+          }
+        }
+      }
+      // 如果没有从 poster 提取到，尝试从缓存查找
+      if (!mediaUrl && tweetId) {
+        const urls = selectAllVideoUrls(tweetId);
+        if (urls && urls.length > 0) {
+          mediaUrl = urls[0];
+          mediaType = "video";
+        }
+      }
+    }
+
+    // 检测图片
+    if (!mediaUrl) {
+      const imgEl = modalContainer.querySelector(
+        'img[src*="pbs.twimg.com/media/"]',
+      );
+      if (imgEl) {
+        mediaUrl = imgEl.getAttribute("src");
+        if (mediaUrl) {
+          mediaUrl = mediaUrl.replace(/([?&])name=[^&]+/, "$1name=orig");
+          if (!/[?&]name=/i.test(mediaUrl)) {
+            mediaUrl += (mediaUrl.includes("?") ? "&" : "?") + "name=orig";
+          }
+          mediaType = "image";
+        }
+      }
+    }
+
+    if (!mediaUrl) return;
+
+    // 创建下载按钮
+    const btn = makeButton(mediaType === "video" ? "下载视频" : "下载图片");
+
+    btn.addEventListener("click", async () => {
+      if (!mediaUrl) return;
+
+      const meta = {
+        screenName: screenName || "unknown",
+        username: screenName || "unknown",
+        tweetTime: new Date().toISOString().slice(0, 16).replace("T", "_"),
+        tweetId: tweetId || Date.now().toString(),
+        random: Math.random().toString(36).slice(2, 8),
+        text: "",
+      };
+
+      const filename = buildFilename(meta);
+      const ext = mediaType === "video" ? ".mp4" : ".jpg";
+      const finalFilename = filename.endsWith(ext)
+        ? filename
+        : `${filename}${ext}`;
+
+      try {
+        await scheduleDownload({
+          url: mediaUrl,
+          filename: finalFilename,
+          tweetId: tweetId,
+          screenName: screenName,
+          text: "",
+        });
+        markDownloaded(btn);
+      } catch (err) {
+        console.warn("Modal download failed:", err);
+      }
+    });
+
+    // 将按钮插入到 action bar（和推文列表中的逻辑一致）
+    actionBar.appendChild(btn);
+    actionBar.dataset.vkModalBtnInjected = "1";
+
+    // 检查是否已下载
+    if (tweetId) {
+      chrome.runtime.sendMessage(
+        { type: "VK_CHECK_HISTORY", payload: { tweetId } },
+        (res) => {
+          if (res?.ok && res.payload?.isExist) markDownloaded(btn);
+        },
+      );
+    }
+  });
+}
+
 function injectButton(article) {
   if (!article || article.dataset.vkBtnInjected === "1") return;
   const actionBar =
@@ -848,6 +982,7 @@ function injectButton(article) {
 const observer = new MutationObserver(() => {
   document.querySelectorAll('article[role="article"]').forEach(injectButton);
   insertGlobalDownloadButton();
+  injectModalButton(); // 检测弹窗
 });
 
 function init() {
@@ -859,6 +994,7 @@ function init() {
   });
   document.querySelectorAll('article[role="article"]').forEach(injectButton);
   insertGlobalDownloadButton();
+  injectModalButton(); // 初始化时检测弹窗
 }
 
 if (location.host.includes("x.com")) {

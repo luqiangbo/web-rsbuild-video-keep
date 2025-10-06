@@ -10,6 +10,7 @@
   "filter.userPlaceholder": "Filter by user",
   "filter.pinUserTooltip": "Starred users are shown first with ★",
   "empty.records": "No records",
+  "table.preview": "Preview",
   "table.name": "Name",
   "table.user": "User",
   "table.text": "Text",

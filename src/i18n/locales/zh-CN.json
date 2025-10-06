@@ -10,6 +10,7 @@
   "filter.userPlaceholder": "筛选用户",
   "filter.pinUserTooltip": "已置顶用户会显示在列表前并带★",
   "empty.records": "暂无下载记录",
+  "table.preview": "预览",
   "table.name": "名称",
   "table.user": "用户",
   "table.text": "文案",
