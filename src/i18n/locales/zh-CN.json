@@ -5,6 +5,7 @@
   "btn.open": "打开",
   "btn.openLocal": "打开本地",
   "btn.openSource": "打开源地址",
+  "btn.openInNewTab": "新标签页打开",
   "tooltip.settings": "配置下载文件名格式",
   "placeholder.search": "搜索名称/用户/文案",
   "filter.userPlaceholder": "筛选用户",

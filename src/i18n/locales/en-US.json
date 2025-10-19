@@ -5,6 +5,7 @@
   "btn.open": "Open",
   "btn.openLocal": "Open local",
   "btn.openSource": "Open source",
+  "btn.openInNewTab": "Open in new tab",
   "tooltip.settings": "Configure file name template",
   "placeholder.search": "Search name/user/text",
   "filter.userPlaceholder": "Filter by user",

@@ -11,30 +11,30 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
-    "@tanstack/react-router": "^1.131.31",
+    "@tanstack/react-router": "^1.133.13",
     "@use-gesture/react": "^10.3.1",
     "ahooks": "^3.9.5",
-    "antd": "^5.27.1",
+    "antd": "^5.27.5",
     "axios": "^1.12.2",
     "dayjs": "^1.11.18",
-    "i18next": "^25.0.0",
+    "i18next": "^25.6.0",
     "plyr": "^3.8.3",
     "plyr-react": "^5.3.0",
     "prop-types": "^15.8.1",
     "qs": "^6.14.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-i18next": "^16.0.0",
+    "react-i18next": "^16.1.0",
     "uuid": "^13.0.0",
     "valtio": "^2.1.8"
   },
   "devDependencies": {
-    "@rsbuild/core": "^1.5.13",
+    "@rsbuild/core": "^1.5.17",
     "@rsbuild/plugin-react": "1.4.1",
     "@rsbuild/plugin-sass": "^1.4.0",
     "@rsbuild/plugin-svgr": "1.2.2",
-    "@tanstack/router-plugin": "^1.132.27",
-    "oxlint": "^1.19.0",
+    "@tanstack/router-plugin": "^1.133.13",
+    "oxlint": "^1.23.0",
     "prettier": "^3.6.2"
   }
 }

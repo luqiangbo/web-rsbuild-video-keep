@@ -1,0 +1,41 @@
+.playerWrapper {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  :global(.plyr) {
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(.plyr__video-wrapper) {
+    height: 100% !important;
+  }
+}
+
+.playerOpenBtn {
+  position: absolute;
+  right: 12px;
+  bottom: 116px;
+  z-index: 10;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.6);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+}

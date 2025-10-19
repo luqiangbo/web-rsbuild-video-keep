@@ -5,6 +5,7 @@
   "btn.open": "開く",
   "btn.openLocal": "ローカルを開く",
   "btn.openSource": "元リンクを開く",
+  "btn.openInNewTab": "新しいタブで開く",
   "tooltip.settings": "ファイル名テンプレートを設定",
   "placeholder.search": "名前/ユーザー/本文を検索",
   "filter.userPlaceholder": "ユーザーで絞り込み",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useSetState } from "ahooks";
 import {
@@ -24,6 +24,7 @@ import {
 import dayjs from "dayjs";
 import Plyr from "plyr-react";
 import "plyr-react/plyr.css";
+import styles from "./index.module.scss";
 import {
   queryDownloads,
   listUsers,
@@ -74,6 +75,80 @@ function RouteComponent() {
     videoPlayerModal: false,
     videoPlayerUrl: "",
   });
+
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window !== "undefined" ? window.innerWidth : 0,
+    height: typeof window !== "undefined" ? window.innerHeight : 0,
+  }));
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let frame = 0;
+
+    const handleResize = () => {
+      cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        setViewport((prev) => {
+          const width = window.innerWidth;
+          const height = window.innerHeight;
+
+          if (prev.width === width && prev.height === height) {
+            return prev;
+          }
+
+          return { width, height };
+        });
+      });
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  const videoSize = useMemo(() => {
+    const aspect = 9 / 16;
+    const maxWidth = viewport.width ? viewport.width * 0.96 : 0;
+    const maxHeight = viewport.height ? viewport.height * 0.96 : 0;
+
+    if (!maxWidth || !maxHeight) {
+      const fallbackWidth = 360;
+      return { width: fallbackWidth, height: fallbackWidth / aspect };
+    }
+
+    let width = maxWidth;
+    let height = width / aspect;
+
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * aspect;
+    }
+
+    return { width, height };
+  }, [viewport]);
+
+  const plyrOptions = useMemo(
+    () => ({
+      controls: ["play", "progress", "current-time", "mute", "volume"],
+      autoplay: true,
+      ratio: "9:16",
+      storage: { enabled: false },
+      clickToPlay: true,
+      keyboard: { focused: true, global: false },
+      tooltips: { controls: true, seek: true },
+      speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
+      invertTime: false,
+      toggleInvert: false,
+    }),
+    [],
+  );
 
   useEffect(() => {
     init();
@@ -722,17 +797,26 @@ function RouteComponent() {
         closable={false}
         maskClosable={true}
         keyboard={true}
-        width="90%"
-        style={{ maxWidth: 500 }}
+        width={videoSize.width}
         centered
         destroyOnClose
         styles={{
-          body: { padding: 0 },
-          content: { padding: 0, background: "#000" },
+          body: {
+            padding: 0,
+            height: videoSize.height,
+          },
+          content: {
+            padding: 0,
+            background: "#000",
+            width: videoSize.width,
+            height: videoSize.height,
+            maxWidth: "100%",
+            maxHeight: "100%",
+          },
         }}
       >
         {state.videoPlayerUrl && (
-          <div style={{ position: "relative" }}>
+          <div className={styles.playerWrapper}>
             <Plyr
               source={{
                 type: "video",
@@ -743,96 +827,14 @@ function RouteComponent() {
                   },
                 ],
               }}
-              options={{
-                controls: [
-                  "play-large",
-                  "play",
-                  "progress",
-                  "current-time",
-                  "mute",
-                  "volume",
-                  "settings",
-                ],
-                autoplay: true,
-                seekTime: 10,
-                displayDuration: true,
-                invertTime: false,
-                toggleInvert: true,
-                ratio: "9:16",
-                storage: { enabled: false },
-                speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
-                i18n: {
-                  restart: "重新播放",
-                  rewind: "快退 {seektime}s",
-                  play: "播放",
-                  pause: "暂停",
-                  fastForward: "快进 {seektime}s",
-                  seek: "定位",
-                  seekLabel: "{currentTime} / {duration}",
-                  played: "已播放",
-                  buffered: "已缓冲",
-                  currentTime: "当前时间",
-                  duration: "总时长",
-                  volume: "音量",
-                  mute: "静音",
-                  unmute: "取消静音",
-                  enableCaptions: "开启字幕",
-                  disableCaptions: "关闭字幕",
-                  download: "下载",
-                  enterFullscreen: "进入全屏",
-                  exitFullscreen: "退出全屏",
-                  frameTitle: "播放器：{title}",
-                  captions: "字幕",
-                  settings: "设置",
-                  pip: "画中画",
-                  menuBack: "返回上级菜单",
-                  speed: "速度",
-                  normal: "正常",
-                  quality: "画质",
-                  loop: "循环播放",
-                  start: "开始",
-                  end: "结束",
-                  all: "全部",
-                  reset: "重置",
-                  disabled: "禁用",
-                  enabled: "启用",
-                  advertisement: "广告",
-                  qualityBadge: {
-                    2160: "4K",
-                    1440: "HD",
-                    1080: "HD",
-                    720: "HD",
-                    576: "SD",
-                    480: "SD",
-                  },
-                },
-              }}
+              options={plyrOptions}
             />
-            {/* 在新标签页打开按钮 */}
             <button
+              type="button"
               onClick={() => window.open(state.videoPlayerUrl, "_blank")}
-              style={{
-                position: "absolute",
-                bottom: 60,
-                right: 12,
-                zIndex: 1000,
-                padding: "6px 12px",
-                borderRadius: 4,
-                border: "none",
-                background: "rgba(0, 0, 0, 0.7)",
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                transition: "background 0.2s",
-              }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.background = "rgba(0, 0, 0, 0.9)")
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.background = "rgba(0, 0, 0, 0.7)")
-              }
+              className={styles.playerOpenBtn}
             >
-              在新标签页打开
+              {t("btn.openInNewTab")}
             </button>
           </div>
         )}
